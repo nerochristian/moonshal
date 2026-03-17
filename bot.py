@@ -1453,6 +1453,7 @@ def _build_help_embed(interaction: discord.Interaction) -> discord.Embed:
             "`/announce` can optionally ping `@everyone` and include one attachment.\n"
             "`/paypanel` looks for `icon pack/qris.*` and uses the largest image in `icon pack` as the banner fallback.\n"
             "`/update` requires notes and a build attachment; changelog entries are optional.\n"
+            "`/panel` and `/myinfo` show your current local whitelist status.\n"
             "`/support add` expects a Roblox game link and resolves the game name automatically.\n"
             "Ticket panel actions and ticket commands must be used inside a server."
         ),
