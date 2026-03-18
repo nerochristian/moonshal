@@ -2063,7 +2063,8 @@ def _build_help_embed(interaction: discord.Interaction) -> discord.Embed:
             "`/genkey`, `/keylist`, `/delkey`, `/purgekeys` manage keys.\n"
             f"`/update` Upload a build and post the update panel in <#{UPDATE_CHANNEL_ID}>.\n"
             f"`/support add` Add a Roblox game to the supported list.\n"
-            f"`/support remove` Remove a supported game from the list."
+            f"`/support remove` Remove a supported game from the list.\n"
+            "`/emoji` Upload all icon pack emojis to this server."
         ),
         inline=False,
     )
@@ -2473,6 +2474,105 @@ async def userpanel(interaction: discord.Interaction) -> None:
         ),
         ephemeral=True,
     )
+
+
+ALL_ICON_CONFIGS: dict[str, dict[str, str]] = {}
+for _cfg in (PAYPANEL_ICON_CONFIGS, USERPANEL_ICON_CONFIGS, UPDATE_ICON_CONFIGS):
+    for _key, _entry in _cfg.items():
+        _ename = _entry.get("emoji_name")
+        if _ename and _ename not in {v.get("emoji_name") for v in ALL_ICON_CONFIGS.values()}:
+            ALL_ICON_CONFIGS[f"{_ename}"] = _entry
+
+
+@bot.tree.command(name="emoji", description="Upload all ZyphraxHub icon pack emojis to this server")
+@app_commands.guild_only()
+@allowed_role_only()
+async def emoji_upload(interaction: discord.Interaction) -> None:
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+    if guild is None:
+        await interaction.followup.send("This command can only be used in a server.", ephemeral=True)
+        return
+
+    me = guild.me
+    if me is None and interaction.client.user is not None:
+        me = guild.get_member(interaction.client.user.id)
+    if me is None or not me.guild_permissions.manage_emojis_and_stickers:
+        await interaction.followup.send(
+            "I need the **Manage Emojis and Stickers** permission to upload emojis.",
+            ephemeral=True,
+        )
+        return
+
+    uploaded: list[str] = []
+    already_exists: list[str] = []
+    skipped: list[str] = []
+    failed: list[str] = []
+
+    for config in ALL_ICON_CONFIGS.values():
+        emoji_name = config.get("emoji_name")
+        icon_file = config.get("icon_file")
+        if not emoji_name:
+            continue
+
+        existing = discord.utils.get(guild.emojis, name=emoji_name)
+        if existing is not None:
+            already_exists.append(emoji_name)
+            continue
+
+        if not icon_file:
+            skipped.append(emoji_name)
+            continue
+
+        icon_path = ICON_PACK_DIR / icon_file
+        if not icon_path.exists():
+            skipped.append(f"{emoji_name} ({icon_file} missing)")
+            continue
+
+        try:
+            await guild.create_custom_emoji(
+                name=emoji_name,
+                image=icon_path.read_bytes(),
+                reason=f"ZyphraxHub icon pack upload by {interaction.user}",
+            )
+            uploaded.append(emoji_name)
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            failed.append(f"{emoji_name}: {exc}")
+
+    total = len(uploaded) + len(already_exists) + len(skipped) + len(failed)
+    embed = _whitelist_embed(
+        "\U0001f3a8 Icon Pack Upload",
+        f"Processed **{total}** emoji(s) from the icon pack.",
+        color=0x2ECC71 if not failed else 0xE67E22,
+    )
+    if uploaded:
+        embed.add_field(
+            name=f"\u2705 Uploaded ({len(uploaded)})",
+            value="\n".join(f"`{n}`" for n in uploaded[:15]) or "None",
+            inline=False,
+        )
+    if already_exists:
+        embed.add_field(
+            name=f"\u2714\ufe0f Already Exists ({len(already_exists)})",
+            value="\n".join(f"`{n}`" for n in already_exists[:15]) or "None",
+            inline=False,
+        )
+    if skipped:
+        embed.add_field(
+            name=f"\u26a0\ufe0f Skipped ({len(skipped)})",
+            value="\n".join(f"`{s}`" for s in skipped[:10]) or "None",
+            inline=False,
+        )
+    if failed:
+        embed.add_field(
+            name=f"\u274c Failed ({len(failed)})",
+            value="\n".join(f"`{f}`" for f in failed[:10]) or "None",
+            inline=False,
+        )
+    if not any([uploaded, already_exists, skipped, failed]):
+        embed.add_field(name="Result", value="No emojis to process.", inline=False)
+
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 @bot.tree.command(name="myinfo", description="View your whitelist information")
