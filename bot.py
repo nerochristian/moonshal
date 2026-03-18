@@ -1671,6 +1671,194 @@ class UserDashboardView(discord.ui.LayoutView):
         return cls(user=user, is_banned=is_banned)
 
 
+def _userpanel_status_line(label: str, value: str, emoji: str = "") -> str:
+    prefix = f"{emoji} " if emoji else ""
+    return f"{prefix}**{label}:** {value}"
+
+
+def _build_userpanel_description(
+    user: Optional[dict[str, object]],
+    *,
+    is_banned: bool,
+) -> str:
+    if is_banned:
+        lines = [
+            _userpanel_status_line("Status", "Blacklisted", "\U0001f6ab"),
+            "",
+            "Your account has been **blacklisted**.\n"
+            "If you believe this is an error, please open a ticket.",
+        ]
+        return "\n".join(lines)
+
+    if user is None or not user.get("key"):
+        lines = [
+            _userpanel_status_line("Status", "No Active License", "\u26a0\ufe0f"),
+            "",
+            "You don't have an active license yet.\n"
+            "Use the **Redeem Key** button below to activate one.",
+        ]
+        return "\n".join(lines)
+
+    key_display = _mask_key(str(user.get("key") or ""))
+    hwid_raw = str(user.get("hwid") or "").strip()
+    hwid_display = f"`{hwid_raw}`" if hwid_raw else "Not set"
+    joined_raw = str(user.get("joined_at") or "").strip()
+    joined_display = joined_raw if joined_raw else "Unknown"
+    last_login_raw = str(user.get("last_login") or "").strip()
+    last_login_display = last_login_raw if last_login_raw else "Never"
+    expiry_display = _format_access_expiry(user)
+
+    luarmor_key = str(user.get("luarmor_user_key") or "").strip()
+    luarmor_status_raw = str(user.get("luarmor_status") or "synced").strip().title()
+    ban_reason = str(user.get("luarmor_ban_reason") or "").strip()
+
+    lines = [
+        _userpanel_status_line("Status", "Active", "\u2705"),
+        "",
+        _userpanel_status_line("License Key", key_display, "\U0001f511"),
+        _userpanel_status_line("HWID", hwid_display, "\U0001f4bb"),
+        _userpanel_status_line("Access Expires", expiry_display, "\u23f3"),
+        "",
+        _userpanel_status_line("Joined", joined_display, "\U0001f4c5"),
+        _userpanel_status_line("Last Login", last_login_display, "\U0001f552"),
+    ]
+
+    if luarmor_key:
+        lines.append("")
+        lines.append(f"\U0001f6e1\ufe0f **Luarmor**")
+        lines.append(f"Sync: {luarmor_status_raw}")
+        lines.append(f"Key: {_mask_key(luarmor_key)}")
+        if ban_reason:
+            lines.append(f"Ban Reason: {discord.utils.escape_markdown(ban_reason)}")
+
+    redeem_count = user.get("redeem_count", 0)
+    login_count = user.get("login_count", 0)
+    if redeem_count or login_count:
+        lines.append("")
+        lines.append(f"\U0001f4ca **Stats**")
+        lines.append(f"Redeems: `{redeem_count}` | Logins: `{login_count}`")
+
+    return "\n".join(lines)
+
+
+class UserPanelResetHWIDButton(discord.ui.Button):
+    def __init__(self) -> None:
+        super().__init__(
+            style=discord.ButtonStyle.danger,
+            label="Reset HWID",
+            custom_id="zyphraxhub_userpanel_resethwid",
+            emoji="\U0001f504",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        user = await whitelist_store.get_user(interaction.user.id)
+        if user is None or not user.get("key"):
+            await interaction.response.send_message(
+                "You don't have an active license to reset.", ephemeral=True
+            )
+            return
+        try:
+            success = await whitelist_store.reset_hwid(interaction.user.id, force=False)
+        except LuarmorSyncError as exc:
+            await interaction.response.send_message(
+                f"HWID reset failed: {exc}", ephemeral=True
+            )
+            return
+        if not success:
+            await interaction.response.send_message(
+                "HWID reset failed. You may not have an active key.", ephemeral=True
+            )
+            return
+        embed = _whitelist_embed(
+            "\U0001f504 HWID Reset",
+            "Your hardware ID has been reset successfully.\nYou can now authenticate from a new device.",
+            color=0x2ECC71,
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+class UserPanelRedeemButton(discord.ui.Button):
+    def __init__(self) -> None:
+        super().__init__(
+            style=discord.ButtonStyle.success,
+            label="Redeem Key",
+            custom_id="zyphraxhub_userpanel_redeem",
+            emoji="\U0001f511",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await interaction.response.send_modal(RedeemKeyModal())
+
+
+class UserPanelRefreshButton(discord.ui.Button):
+    def __init__(self) -> None:
+        super().__init__(
+            style=discord.ButtonStyle.secondary,
+            label="Refresh",
+            custom_id="zyphraxhub_userpanel_refresh",
+            emoji="\U0001f503",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await interaction.response.edit_message(
+            view=ensure_layout_view_action_rows(
+                await UserPanelView.build_for_user(interaction.user.id)
+            )
+        )
+
+
+class UserPanelTicketButton(discord.ui.Button):
+    def __init__(self) -> None:
+        super().__init__(
+            style=discord.ButtonStyle.secondary,
+            label="Open Ticket",
+            custom_id="zyphraxhub_userpanel_ticket",
+            emoji="\U0001f4e9",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await interaction.response.send_modal(
+            PaymentProofModal(payment_method="Support")
+        )
+
+
+class UserPanelView(discord.ui.LayoutView):
+    def __init__(
+        self,
+        *,
+        user: Optional[dict[str, object]],
+        is_banned: bool,
+    ) -> None:
+        super().__init__(timeout=300)
+        has_key = bool(user and user.get("key"))
+
+        container = branded_panel_container(
+            title="\U0001f464 Your ZyphraxHub Account",
+            description=_build_userpanel_description(user, is_banned=is_banned),
+            accent_color=(
+                0xE74C3C if is_banned else (0x2ECC71 if has_key else 0xF1C40F)
+            ),
+        )
+        container.add_item(
+            discord.ui.Separator(spacing=discord.SeparatorSpacing.large)
+        )
+
+        buttons: list[discord.ui.Button] = [UserPanelRedeemButton()]
+        if has_key:
+            buttons.append(UserPanelResetHWIDButton())
+        buttons.append(UserPanelTicketButton())
+        buttons.append(UserPanelRefreshButton())
+
+        container.add_item(discord.ui.ActionRow(*buttons))
+        self.add_item(container)
+
+    @classmethod
+    async def build_for_user(cls, user_id: int) -> "UserPanelView":
+        user = await whitelist_store.get_user_with_stats(user_id)
+        is_banned = await whitelist_store.is_blacklisted(user_id)
+        return cls(user=user, is_banned=is_banned)
+
+
 def _build_help_embed(interaction: discord.Interaction) -> discord.Embed:
     embed = discord.Embed(
         title="ZyphraxHub Community Bot Help",
@@ -1695,6 +1883,7 @@ def _build_help_embed(interaction: discord.Interaction) -> discord.Embed:
         value=(
             "`/help` Show this command list.\n"
             "`/panel` Open your ZyphraxHub Community dashboard.\n"
+            "`/userpanel` Open your full account panel with Luarmor info.\n"
             "`/supported` Show the current supported games list.\n"
             "`/redeem` Redeem a ZyphraxHub Community key.\n"
             "`/myinfo` View your whitelist account information.\n"
@@ -2132,6 +2321,17 @@ async def panel(interaction: discord.Interaction) -> None:
     )
 
 
+@bot.tree.command(name="userpanel", description="Open your full ZyphraxHub account panel")
+@app_commands.guild_only()
+async def userpanel(interaction: discord.Interaction) -> None:
+    await interaction.response.send_message(
+        view=ensure_layout_view_action_rows(
+            await UserPanelView.build_for_user(interaction.user.id)
+        ),
+        ephemeral=True,
+    )
+
+
 @bot.tree.command(name="myinfo", description="View your whitelist information")
 @app_commands.guild_only()
 async def myinfo(interaction: discord.Interaction) -> None:
@@ -2258,7 +2458,8 @@ async def unwhitelist(interaction: discord.Interaction, member: discord.Member) 
         f"{member.mention} was removed from the whitelist.",
         color=0x2ECC71,
     )
-    embed.add_field(name="Released Key", value=f"`{released_key}`", inline=False)
+    key_field_name = "Removed Key" if whitelist_store.uses_luarmor_keys else "Released Key"
+    embed.add_field(name=key_field_name, value=f"`{released_key}`", inline=False)
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 

@@ -1,0 +1,113 @@
+21: from whitelist_system import KEY_PREFIX, LuarmorSyncError, build_store_from_env
+80: WHITELIST_DB_PATH = BASE_DIR / "whitelist.db"
+182: whitelist_store = build_store_from_env(WHITELIST_DB_PATH)
+264: def _format_luarmor_status(user: Optional[dict[str, object]]) -> str:
+267:     luarmor_key = user.get("luarmor_user_key")
+268:     if not luarmor_key:
+270:     status = str(user.get("luarmor_status") or "synced").strip().title()
+271:     ban_reason = str(user.get("luarmor_ban_reason") or "").strip()
+275:             f"Key: `{_mask_key(str(luarmor_key))}`\n"
+278:     return f"{status}\nKey: `{_mask_key(str(luarmor_key))}`"
+282: def _validate_whitelist_key_format(key: str) -> bool:
+290: def _whitelist_embed(
+306:     if whitelist_store.uses_luarmor_keys:
+307:         return "Invalid key format. Use the Luarmor key exactly as provided."
+424:     keys = await whitelist_store.create_keys(
+433:         else "The keys were added to the local whitelist database."
+435:     embed = _whitelist_embed(title, description, color=0x2ECC71)
+492:     keys = await whitelist_store.get_all_keys(include_used=False)
+1124:             "Add ZyphraxHub Community to your antivirus whitelist.\n"
+1275:         "Wait Whitelist Manager response\n\n"
+1293:         "Wait Whitelist Manager response\n\n"
+1531:         if not _validate_whitelist_key_format(normalized_key):
+1538:         if await whitelist_store.is_blacklisted(interaction.user.id):
+1545:         if not await whitelist_store.key_exists_and_unused(normalized_key):
+1552:         if not await whitelist_store.redeem_key(interaction.user.id, normalized_key):
+1560:             embed=_whitelist_embed(
+1590:         user = await whitelist_store.get_user_with_stats(interaction.user.id)
+1591:         is_banned = await whitelist_store.is_blacklisted(interaction.user.id)
+1594:         embed = _whitelist_embed("Your Whitelist Account", color=color)
+1606:             embed.add_field(name="Luarmor", value=_format_luarmor_status(user), inline=False)
+1669:         user = await whitelist_store.get_user_with_stats(user_id)
+1670:         is_banned = await whitelist_store.is_blacklisted(user_id)
+1700:             "`/myinfo` View your whitelist account information.\n"
+1732:             "`/whitelist` Auto-whitelist a user and assign a key.\n"
+1733:             "`/unwhitelist` Remove a user and release their key.\n"
+1735:             "`/lookup` Inspect a whitelist record.\n"
+1736:             "`/luarmorsync`, `/luarmoraudit` inspect Luarmor sync.\n"
+1760:             "`/panel` and `/myinfo` show your current local whitelist status.\n"
+1761:             "`/redeem` accepts either the local ZyphraxHub key format or Luarmor-issued keys.\n"
+2087:     if not _validate_whitelist_key_format(normalized_key):
+2094:     if await whitelist_store.is_blacklisted(interaction.user.id):
+2101:     if not await whitelist_store.key_exists_and_unused(normalized_key):
+2108:     if not await whitelist_store.redeem_key(interaction.user.id, normalized_key):
+2115:     embed = _whitelist_embed(
+2135: @bot.tree.command(name="myinfo", description="View your whitelist information")
+2138:     user = await whitelist_store.get_user_with_stats(interaction.user.id)
+2139:     is_banned = await whitelist_store.is_blacklisted(interaction.user.id)
+2142:     embed = _whitelist_embed("Your Whitelist Account", color=color)
+2154:         embed.add_field(name="Luarmor", value=_format_luarmor_status(user), inline=False)
+2174: @bot.tree.command(name="whitelist", description="Auto-whitelist a user and assign a key")
+2177: @app_commands.describe(member="The user to whitelist", send_dm="Send the assigned key by DM")
+2178: async def whitelist(
+2184:         await interaction.response.send_message("Bots cannot be whitelisted.", ephemeral=True)
+2187:     if await whitelist_store.is_blacklisted(member.id):
+2188:         reason = await whitelist_store.get_blacklist_reason(member.id)
+2189:         embed = _whitelist_embed(
+2190:             "Cannot Whitelist",
+2201:         key = await whitelist_store.whitelist_user(member.id, created_by=interaction.user.id)
+2203:         reason = await whitelist_store.get_blacklist_reason(member.id)
+2204:         embed = _whitelist_embed(
+2205:             "Cannot Whitelist",
+2216:             dm_embed = _whitelist_embed(
+2218:                 f"You were whitelisted by **{interaction.user.display_name}**.",
+2232:     embed = _whitelist_embed(
+2233:         "User Whitelisted",
+2242: @bot.tree.command(name="unwhitelist", description="Remove a user from the whitelist")
+2245: @app_commands.describe(member="The user to remove from whitelist")
+2246: async def unwhitelist(interaction: discord.Interaction, member: discord.Member) -> None:
+2248:     released_key = await whitelist_store.unwhitelist_user(member.id)
+2251:             embed=_whitelist_embed("Not Whitelisted", f"{member.mention} does not have an active key.", color=0xE74C3C),
+2256:     embed = _whitelist_embed(
+2258:         f"{member.mention} was removed from the whitelist.",
+2261:     key_field_name = "Removed Key" if whitelist_store.uses_luarmor_keys else "Released Key"
+2266: @bot.tree.command(name="blacklist", description="Blacklist a user locally and on Luarmor")
+2272:     await whitelist_store.blacklist_user(member.id, reason=reason, ban_expire=-1)
+2273:     embed = _whitelist_embed(
+2286: @bot.tree.command(name="unblacklist", description="Remove a user blacklist locally and on Luarmor")
+2292:     await whitelist_store.unblacklist_user(member.id)
+2293:     embed = _whitelist_embed(
+2301: @bot.tree.command(name="resethwid", description="Reset a user's HWID locally and on Luarmor")
+2304: @app_commands.describe(member="The user whose HWID should be reset", force="Force Luarmor cooldown bypass")
+2311:     if not await whitelist_store.reset_hwid(member.id, force=force):
+2313:             embed=_whitelist_embed(
+2322:     embed = _whitelist_embed(
+2331: @bot.tree.command(name="lookup", description="Look up a whitelist user by mention or ID")
+2341:     record = await whitelist_store.get_user_with_stats(discord_id)
+2344:             embed=_whitelist_embed("Not Found", f"No whitelist record exists for `{discord_id}`.", color=0xE74C3C),
+2349:     is_banned = await whitelist_store.is_blacklisted(discord_id)
+2350:     embed = _whitelist_embed(
+2351:         f"Whitelist Lookup: {discord_id}",
+2365:     embed.add_field(name="Luarmor", value=_format_luarmor_status(record), inline=False)
+2376: @bot.tree.command(name="luarmorsync", description="Resync one whitelist user to Luarmor")
+2380: async def luarmorsync(interaction: discord.Interaction, user: str) -> None:
+2387:     remote_user = await whitelist_store.resync_user_to_luarmor(discord_id)
+2388:     embed = _whitelist_embed(
+2389:         "Luarmor Resynced",
+2406: @bot.tree.command(name="luarmoraudit", description="Audit local whitelist users against Luarmor")
+2409: async def luarmoraudit(interaction: discord.Interaction) -> None:
+2411:     audit = await whitelist_store.audit_luarmor()
+2412:     embed = _whitelist_embed("Luarmor Audit", color=THESEUS_BLUE)
+2481:     stats = await whitelist_store.get_stats()
+2482:     keys = await whitelist_store.get_all_keys(include_used=show_used)
+2513:     deleted = await whitelist_store.delete_unused_key(normalized_key)
+2516:             embed=_whitelist_embed(
+2526:         embed=_whitelist_embed(
+2542:             embed=_whitelist_embed(
+2551:     deleted = await whitelist_store.purge_unused_keys()
+2553:         embed=_whitelist_embed(
+2673: @whitelist.error
+2674: @unwhitelist.error
+2679: @luarmorsync.error
+2680: @luarmoraudit.error
+2720:     if isinstance(original, LuarmorSyncError):

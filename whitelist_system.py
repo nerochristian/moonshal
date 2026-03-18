@@ -529,7 +529,6 @@ class WhitelistStore:
 
     async def key_exists_and_unused(self, key: str) -> bool:
         await self.ensure_initialized()
-        await self._expire_unused_generated_keys()
         normalized_key = key.strip()
 
         if self._pool is not None:
@@ -552,7 +551,6 @@ class WhitelistStore:
 
     async def redeem_key(self, discord_id: int | str, key: str) -> bool:
         await self.ensure_initialized()
-        await self._expire_unused_generated_keys()
         normalized_key = key.strip()
         discord_id_str = str(discord_id)
         current_time = datetime.now(UTC)
@@ -689,6 +687,7 @@ class WhitelistStore:
 
         key = str(user["key"])
         discord_id_str = str(discord_id)
+        release_key = not self.uses_luarmor_keys
         luarmor_user_key = (
             str(user["luarmor_user_key"])
             if user.get("luarmor_user_key")
@@ -702,10 +701,11 @@ class WhitelistStore:
                         "UPDATE users SET key = NULL WHERE discord_id = $1",
                         discord_id_str,
                     )
-                    await connection.execute(
-                        "UPDATE keys SET used = 0, used_by = NULL, used_at = NULL WHERE key = $1",
-                        key,
-                    )
+                    if release_key:
+                        await connection.execute(
+                            "UPDATE keys SET used = 0, used_by = NULL, used_at = NULL WHERE key = $1",
+                            key,
+                        )
                     await connection.execute(
                         """
                         UPDATE users
@@ -734,10 +734,11 @@ class WhitelistStore:
                     "UPDATE users SET key = NULL WHERE discord_id = ?",
                     (discord_id_str,),
                 )
-                connection.execute(
-                    "UPDATE keys SET used = 0, used_by = NULL, used_at = NULL WHERE key = ?",
-                    (key,),
-                )
+                if release_key:
+                    connection.execute(
+                        "UPDATE keys SET used = 0, used_by = NULL, used_at = NULL WHERE key = ?",
+                        (key,),
+                    )
                 connection.execute(
                     """
                     UPDATE users
@@ -764,7 +765,6 @@ class WhitelistStore:
 
     async def get_all_keys(self, *, include_used: bool = True) -> list[dict[str, Any]]:
         await self.ensure_initialized()
-        await self._expire_unused_generated_keys()
 
         if self._pool is not None:
             query = "SELECT * FROM keys ORDER BY created_at DESC"
@@ -802,10 +802,15 @@ class WhitelistStore:
     async def purge_unused_keys(self) -> int:
         await self.ensure_initialized()
 
+        unused_keys = await self.get_all_keys(include_used=False)
+        unused_key_values = [str(row["key"]) for row in unused_keys if str(row.get("key") or "").strip()]
+
         if self._pool is not None:
             async with self._pool.acquire() as connection:
                 result = await connection.execute("DELETE FROM keys WHERE used = 0")
             deleted = int(result.split()[-1])
+            if unused_key_values:
+                await self._delete_remote_generated_keys(unused_key_values)
             await self.log_event("purge_keys", None, f"Deleted {deleted} unused keys")
             return deleted
 
@@ -816,6 +821,8 @@ class WhitelistStore:
                 return int(cursor.rowcount or 0)
 
         deleted = await asyncio.to_thread(_run)
+        if unused_key_values:
+            await self._delete_remote_generated_keys(unused_key_values)
         await self.log_event("purge_keys", None, f"Deleted {deleted} unused keys")
         return deleted
 
@@ -1107,7 +1114,8 @@ class WhitelistStore:
             if remote_user is None:
                 missing_remote.append(discord_id)
                 continue
-            if str(remote_user.get("user_key") or "").strip() != local_key:
+            expected_remote_key = str(local_user.get("luarmor_user_key") or local_key).strip()
+            if expected_remote_key and str(remote_user.get("user_key") or "").strip() != expected_remote_key:
                 mismatched_keys.append(discord_id)
             local_banned = await self.is_blacklisted(discord_id)
             remote_banned = bool(remote_user.get("banned"))
@@ -1132,7 +1140,6 @@ class WhitelistStore:
 
     async def get_stats(self) -> dict[str, int]:
         await self.ensure_initialized()
-        await self._expire_unused_generated_keys()
 
         if self._pool is not None:
             async with self._pool.acquire() as connection:
@@ -1332,16 +1339,6 @@ class WhitelistStore:
                 connection.execute(f"ALTER TABLE keys ADD COLUMN {column_name} {column_type}")
 
     @staticmethod
-    def _row_duration_seconds(row: dict[str, Any]) -> Optional[int]:
-        duration_seconds = row.get("duration_seconds")
-        if duration_seconds not in (None, ""):
-            return int(duration_seconds)
-        duration_days = row.get("duration_days")
-        if duration_days not in (None, ""):
-            return int(duration_days) * 86400
-        return None
-
-    @staticmethod
     def _auth_expire_from_user(user: Optional[dict[str, Any]]) -> Optional[int]:
         if user is None:
             return None
@@ -1363,79 +1360,7 @@ class WhitelistStore:
             try:
                 await self.luarmor.delete_user(user_key=user_key)
             except LuarmorSyncError as exc:
-                LOGGER.warning("Failed to delete expired Luarmor key %s: %s", user_key, exc)
-
-    async def _expire_unused_generated_keys(self) -> int:
-        await self.ensure_initialized()
-        now = datetime.now(UTC)
-
-        if self._pool is not None:
-            async with self._pool.acquire() as connection:
-                rows = await connection.fetch(
-                    "SELECT key, created_at, duration_days, duration_seconds FROM keys WHERE used = 0"
-                )
-                expired_keys: list[str] = []
-                for row in rows:
-                    row_data = dict(row)
-                    duration_seconds = self._row_duration_seconds(row_data)
-                    if duration_seconds is None:
-                        continue
-                    created_at_raw = str(row_data.get("created_at") or "").strip()
-                    if not created_at_raw:
-                        continue
-                    try:
-                        created_at = datetime.fromisoformat(created_at_raw)
-                    except ValueError:
-                        continue
-                    if created_at.tzinfo is None:
-                        created_at = created_at.replace(tzinfo=UTC)
-                    if created_at + timedelta(seconds=duration_seconds) <= now:
-                        expired_keys.append(str(row_data["key"]))
-                if not expired_keys:
-                    return 0
-                await self._delete_remote_generated_keys(expired_keys)
-                await connection.execute(
-                    "DELETE FROM keys WHERE key = ANY($1::text[])",
-                    expired_keys,
-                )
-            await self.log_event("expire_keys", None, f"Deleted {len(expired_keys)} expired unused key(s)")
-            return len(expired_keys)
-
-        def _run() -> list[str]:
-            with self._sqlite_connect() as connection:
-                rows = connection.execute(
-                    "SELECT key, created_at, duration_days, duration_seconds FROM keys WHERE used = 0"
-                ).fetchall()
-                expired_keys: list[str] = []
-                for row in rows:
-                    row_data = dict(row)
-                    duration_seconds = self._row_duration_seconds(row_data)
-                    if duration_seconds is None:
-                        continue
-                    created_at_raw = str(row_data.get("created_at") or "").strip()
-                    if not created_at_raw:
-                        continue
-                    try:
-                        created_at = datetime.fromisoformat(created_at_raw)
-                    except ValueError:
-                        continue
-                    if created_at.tzinfo is None:
-                        created_at = created_at.replace(tzinfo=UTC)
-                    if created_at + timedelta(seconds=duration_seconds) <= now:
-                        expired_keys.append(str(row_data["key"]))
-                if expired_keys:
-                    connection.executemany(
-                        "DELETE FROM keys WHERE key = ?",
-                        [(key,) for key in expired_keys],
-                    )
-                    connection.commit()
-                return expired_keys
-
-        expired_keys = await asyncio.to_thread(_run)
-        if expired_keys:
-            await self._delete_remote_generated_keys(expired_keys)
-            await self.log_event("expire_keys", None, f"Deleted {len(expired_keys)} expired unused key(s)")
-        return len(expired_keys)
+                LOGGER.warning("Failed to delete Luarmor key %s: %s", user_key, exc)
 
     async def _expire_stale_users(self) -> None:
         timestamp = datetime.now(UTC).isoformat()
