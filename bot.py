@@ -106,6 +106,17 @@ PAYPANEL_ICON_CONFIGS: dict[str, dict[str, str]] = {
     "done": {"emoji_name": "zyphraxhub_pay_done", "icon_file": "tick.png"},
 }
 
+USERPANEL_ICON_CONFIGS: dict[str, dict[str, str]] = {
+    "key":     {"emoji_name": "zyphraxhub_up_key",     "icon_file": "key.png"},
+    "tick":    {"emoji_name": "zyphraxhub_up_tick",    "icon_file": "tick.png"},
+    "x":       {"emoji_name": "zyphraxhub_up_x",       "icon_file": "x.png"},
+    "hwid":    {"emoji_name": "zyphraxhub_up_hwid",    "icon_file": "website.png"},
+    "stats":   {"emoji_name": "zyphraxhub_up_stats",   "icon_file": "coin.png"},
+    "ticket":  {"emoji_name": "zyphraxhub_up_ticket",  "icon_file": "message.png"},
+    "shield":  {"emoji_name": "zyphraxhub_up_shield",  "icon_file": "notify.png"},
+    "refresh": {"emoji_name": "zyphraxhub_up_refresh",  "icon_file": "roblox.png"},
+}
+
 UPDATE_ICON_CONFIGS: dict[str, dict[str, str]] = {
     "windows":  {"emoji_name": "theseus_update_windows",  "icon_file": "windows.png"},
     "settings": {"emoji_name": "theseus_update_settings", "icon_file": "setting.png"},
@@ -740,6 +751,53 @@ async def _ensure_paypanel_emojis(
         except (discord.Forbidden, discord.HTTPException) as exc:
             LOGGER.warning(
                 "Failed to create paypanel emoji %s in guild %s: %s", emoji_name, guild.id, exc
+            )
+
+    return emojis
+
+
+async def _ensure_userpanel_emojis(
+    guild: discord.Guild, client: discord.Client
+) -> dict[str, discord.Emoji]:
+    emojis: dict[str, discord.Emoji] = {}
+
+    me = guild.me
+    if me is None and client.user is not None:
+        me = guild.get_member(client.user.id)
+    can_manage = me is not None and me.guild_permissions.manage_emojis_and_stickers
+
+    for key, config in USERPANEL_ICON_CONFIGS.items():
+        emoji_name = config.get("emoji_name")
+        if not emoji_name:
+            continue
+
+        existing = discord.utils.get(guild.emojis, name=emoji_name)
+        if existing is not None:
+            emojis[key] = existing
+            continue
+
+        if not can_manage:
+            continue
+
+        icon_file = config.get("icon_file")
+        if not icon_file:
+            continue
+
+        icon_path = ICON_PACK_DIR / icon_file
+        if not icon_path.exists():
+            LOGGER.warning("Missing userpanel icon for %s at %s", key, icon_path)
+            continue
+
+        try:
+            emoji = await guild.create_custom_emoji(
+                name=emoji_name,
+                image=icon_path.read_bytes(),
+                reason="Upload ZyphraxHub Community user panel icons",
+            )
+            emojis[key] = emoji
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            LOGGER.warning(
+                "Failed to create userpanel emoji %s in guild %s: %s", emoji_name, guild.id, exc
             )
 
     return emojis
@@ -1671,8 +1729,17 @@ class UserDashboardView(discord.ui.LayoutView):
         return cls(user=user, is_banned=is_banned)
 
 
-def _userpanel_status_line(label: str, value: str, emoji: str = "") -> str:
-    prefix = f"{emoji} " if emoji else ""
+def _userpanel_emoji_str(panel_emojis: dict[str, discord.Emoji], key: str, fallback: str = "") -> str:
+    emoji = panel_emojis.get(key)
+    return str(emoji) if emoji is not None else fallback
+
+
+def _userpanel_status_line(
+    label: str,
+    value: str,
+    emoji_str: str = "",
+) -> str:
+    prefix = f"{emoji_str} " if emoji_str else ""
     return f"{prefix}**{label}:** {value}"
 
 
@@ -1680,10 +1747,14 @@ def _build_userpanel_description(
     user: Optional[dict[str, object]],
     *,
     is_banned: bool,
+    panel_emojis: Optional[dict[str, discord.Emoji]] = None,
 ) -> str:
+    pe = panel_emojis or {}
+
     if is_banned:
+        x_e = _userpanel_emoji_str(pe, "x", "\u26d4")
         lines = [
-            _userpanel_status_line("Status", "Blacklisted", "\U0001f6ab"),
+            _userpanel_status_line("Status", "Blacklisted", x_e),
             "",
             "Your account has been **blacklisted**.\n"
             "If you believe this is an error, please open a ticket.",
@@ -1691,13 +1762,18 @@ def _build_userpanel_description(
         return "\n".join(lines)
 
     if user is None or not user.get("key"):
+        key_e = _userpanel_emoji_str(pe, "key", "\u26a0\ufe0f")
         lines = [
-            _userpanel_status_line("Status", "No Active License", "\u26a0\ufe0f"),
+            _userpanel_status_line("Status", "No Active License", key_e),
             "",
             "You don't have an active license yet.\n"
             "Use the **Redeem Key** button below to activate one.",
         ]
         return "\n".join(lines)
+
+    tick_e = _userpanel_emoji_str(pe, "tick", "\u2705")
+    key_e  = _userpanel_emoji_str(pe, "key",  "\U0001f511")
+    hwid_e = _userpanel_emoji_str(pe, "hwid", "\U0001f4bb")
 
     key_display = _mask_key(str(user.get("key") or ""))
     hwid_raw = str(user.get("hwid") or "").strip()
@@ -1713,10 +1789,10 @@ def _build_userpanel_description(
     ban_reason = str(user.get("luarmor_ban_reason") or "").strip()
 
     lines = [
-        _userpanel_status_line("Status", "Active", "\u2705"),
+        _userpanel_status_line("Status", "Active", tick_e),
         "",
-        _userpanel_status_line("License Key", key_display, "\U0001f511"),
-        _userpanel_status_line("HWID", hwid_display, "\U0001f4bb"),
+        _userpanel_status_line("License Key", key_display, key_e),
+        _userpanel_status_line("HWID", hwid_display, hwid_e),
         _userpanel_status_line("Access Expires", expiry_display, "\u23f3"),
         "",
         _userpanel_status_line("Joined", joined_display, "\U0001f4c5"),
@@ -1724,8 +1800,9 @@ def _build_userpanel_description(
     ]
 
     if luarmor_key:
+        shield_e = _userpanel_emoji_str(pe, "shield", "\U0001f6e1\ufe0f")
         lines.append("")
-        lines.append(f"\U0001f6e1\ufe0f **Luarmor**")
+        lines.append(f"{shield_e} **Luarmor**")
         lines.append(f"Sync: {luarmor_status_raw}")
         lines.append(f"Key: {_mask_key(luarmor_key)}")
         if ban_reason:
@@ -1734,20 +1811,23 @@ def _build_userpanel_description(
     redeem_count = user.get("redeem_count", 0)
     login_count = user.get("login_count", 0)
     if redeem_count or login_count:
+        stats_e = _userpanel_emoji_str(pe, "stats", "\U0001f4ca")
         lines.append("")
-        lines.append(f"\U0001f4ca **Stats**")
+        lines.append(f"{stats_e} **Stats**")
         lines.append(f"Redeems: `{redeem_count}` | Logins: `{login_count}`")
 
     return "\n".join(lines)
 
 
 class UserPanelResetHWIDButton(discord.ui.Button):
-    def __init__(self) -> None:
+    def __init__(self, panel_emojis: Optional[dict[str, discord.Emoji]] = None) -> None:
+        pe = panel_emojis or {}
+        custom_emoji: Optional[discord.Emoji] = pe.get("hwid")
         super().__init__(
             style=discord.ButtonStyle.danger,
             label="Reset HWID",
             custom_id="zyphraxhub_userpanel_resethwid",
-            emoji="\U0001f504",
+            emoji=custom_emoji or "\U0001f504",
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
@@ -1770,7 +1850,7 @@ class UserPanelResetHWIDButton(discord.ui.Button):
             )
             return
         embed = _whitelist_embed(
-            "\U0001f504 HWID Reset",
+            "HWID Reset",
             "Your hardware ID has been reset successfully.\nYou can now authenticate from a new device.",
             color=0x2ECC71,
         )
@@ -1778,12 +1858,14 @@ class UserPanelResetHWIDButton(discord.ui.Button):
 
 
 class UserPanelRedeemButton(discord.ui.Button):
-    def __init__(self) -> None:
+    def __init__(self, panel_emojis: Optional[dict[str, discord.Emoji]] = None) -> None:
+        pe = panel_emojis or {}
+        custom_emoji: Optional[discord.Emoji] = pe.get("key")
         super().__init__(
             style=discord.ButtonStyle.success,
             label="Redeem Key",
             custom_id="zyphraxhub_userpanel_redeem",
-            emoji="\U0001f511",
+            emoji=custom_emoji or "\U0001f511",
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
@@ -1791,29 +1873,38 @@ class UserPanelRedeemButton(discord.ui.Button):
 
 
 class UserPanelRefreshButton(discord.ui.Button):
-    def __init__(self) -> None:
+    def __init__(self, panel_emojis: Optional[dict[str, discord.Emoji]] = None) -> None:
         super().__init__(
             style=discord.ButtonStyle.secondary,
             label="Refresh",
             custom_id="zyphraxhub_userpanel_refresh",
             emoji="\U0001f503",
         )
+        self._panel_emojis: dict[str, discord.Emoji] = panel_emojis or {}
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        guild = interaction.guild
+        panel_emojis: dict[str, discord.Emoji] = {}
+        if guild is not None:
+            panel_emojis = await _ensure_userpanel_emojis(guild, interaction.client)
         await interaction.response.edit_message(
             view=ensure_layout_view_action_rows(
-                await UserPanelView.build_for_user(interaction.user.id)
+                await UserPanelView.build_for_user(
+                    interaction.user.id, panel_emojis=panel_emojis
+                )
             )
         )
 
 
 class UserPanelTicketButton(discord.ui.Button):
-    def __init__(self) -> None:
+    def __init__(self, panel_emojis: Optional[dict[str, discord.Emoji]] = None) -> None:
+        pe = panel_emojis or {}
+        custom_emoji: Optional[discord.Emoji] = pe.get("ticket")
         super().__init__(
             style=discord.ButtonStyle.secondary,
             label="Open Ticket",
             custom_id="zyphraxhub_userpanel_ticket",
-            emoji="\U0001f4e9",
+            emoji=custom_emoji or "\U0001f4e9",
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
@@ -1828,13 +1919,18 @@ class UserPanelView(discord.ui.LayoutView):
         *,
         user: Optional[dict[str, object]],
         is_banned: bool,
+        panel_emojis: Optional[dict[str, discord.Emoji]] = None,
     ) -> None:
         super().__init__(timeout=300)
+        pe = panel_emojis or {}
         has_key = bool(user and user.get("key"))
 
+        title_emoji = _userpanel_emoji_str(pe, "tick", "\U0001f464") if has_key and not is_banned else "\U0001f464"
         container = branded_panel_container(
-            title="\U0001f464 Your ZyphraxHub Account",
-            description=_build_userpanel_description(user, is_banned=is_banned),
+            title=f"{title_emoji} Your ZyphraxHub Account",
+            description=_build_userpanel_description(
+                user, is_banned=is_banned, panel_emojis=pe
+            ),
             accent_color=(
                 0xE74C3C if is_banned else (0x2ECC71 if has_key else 0xF1C40F)
             ),
@@ -1843,20 +1939,24 @@ class UserPanelView(discord.ui.LayoutView):
             discord.ui.Separator(spacing=discord.SeparatorSpacing.large)
         )
 
-        buttons: list[discord.ui.Button] = [UserPanelRedeemButton()]
+        buttons: list[discord.ui.Button] = [UserPanelRedeemButton(pe)]
         if has_key:
-            buttons.append(UserPanelResetHWIDButton())
-        buttons.append(UserPanelTicketButton())
-        buttons.append(UserPanelRefreshButton())
+            buttons.append(UserPanelResetHWIDButton(pe))
+        buttons.append(UserPanelTicketButton(pe))
+        buttons.append(UserPanelRefreshButton(pe))
 
         container.add_item(discord.ui.ActionRow(*buttons))
         self.add_item(container)
 
     @classmethod
-    async def build_for_user(cls, user_id: int) -> "UserPanelView":
+    async def build_for_user(
+        cls,
+        user_id: int,
+        panel_emojis: Optional[dict[str, discord.Emoji]] = None,
+    ) -> "UserPanelView":
         user = await whitelist_store.get_user_with_stats(user_id)
         is_banned = await whitelist_store.is_blacklisted(user_id)
-        return cls(user=user, is_banned=is_banned)
+        return cls(user=user, is_banned=is_banned, panel_emojis=panel_emojis)
 
 
 def _build_help_embed(interaction: discord.Interaction) -> discord.Embed:
@@ -2324,9 +2424,15 @@ async def panel(interaction: discord.Interaction) -> None:
 @bot.tree.command(name="userpanel", description="Open your full ZyphraxHub account panel")
 @app_commands.guild_only()
 async def userpanel(interaction: discord.Interaction) -> None:
-    await interaction.response.send_message(
+    await interaction.response.defer(ephemeral=True)
+    panel_emojis: dict[str, discord.Emoji] = {}
+    if interaction.guild is not None:
+        panel_emojis = await _ensure_userpanel_emojis(interaction.guild, interaction.client)
+    await interaction.followup.send(
         view=ensure_layout_view_action_rows(
-            await UserPanelView.build_for_user(interaction.user.id)
+            await UserPanelView.build_for_user(
+                interaction.user.id, panel_emojis=panel_emojis
+            )
         ),
         ephemeral=True,
     )
