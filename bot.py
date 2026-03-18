@@ -1829,9 +1829,24 @@ def _build_userpanel_description(
     hwid_raw = str(user.get("hwid") or "").strip()
     hwid_display = f"`{hwid_raw}`" if hwid_raw else "Not set"
     joined_raw = str(user.get("joined_at") or "").strip()
-    joined_display = joined_raw if joined_raw else "Unknown"
+    if joined_raw:
+        try:
+            joined_dt = datetime.fromisoformat(joined_raw)
+            joined_display = discord.utils.format_dt(joined_dt, "F")
+        except ValueError:
+            joined_display = joined_raw
+    else:
+        joined_display = "Unknown"
+        
     last_login_raw = str(user.get("last_login") or "").strip()
-    last_login_display = last_login_raw if last_login_raw else "Never"
+    if last_login_raw:
+        try:
+            last_login_dt = datetime.fromisoformat(last_login_raw)
+            last_login_display = discord.utils.format_dt(last_login_dt, "R")
+        except ValueError:
+            last_login_display = last_login_raw
+    else:
+        last_login_display = "Never"
     expiry_display = _format_access_expiry(user)
 
     luarmor_key = str(user.get("luarmor_user_key") or "").strip()
