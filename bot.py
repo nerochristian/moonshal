@@ -2165,7 +2165,7 @@ class GlobalUserPanelView(discord.ui.LayoutView):
         super().__init__(timeout=None)
         
         icon_url = guild.icon.url if guild and guild.icon else None
-        title = f"{guild.name} Account Panel" if guild else "Account Panel"
+        title = f"{guild.name} Panel" if guild else "Panel"
         
         container = branded_panel_container(
             title=title,
@@ -2667,10 +2667,10 @@ async def userpanel(interaction: discord.Interaction) -> None:
     )
 
 
-@bot.tree.command(name="senduserpanel", description="Post the persistent global UserPanel to the current channel")
+@bot.tree.command(name="userpanel", description="Post the persistent global Panel to the current channel")
 @allowed_role_only()
 @app_commands.guild_only()
-async def senduserpanel(interaction: discord.Interaction) -> None:
+async def userpanel(interaction: discord.Interaction) -> None:
     if not isinstance(interaction.channel, discord.TextChannel):
         await interaction.response.send_message("This command must be used in a text channel.", ephemeral=True)
         return
