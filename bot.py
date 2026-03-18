@@ -1707,17 +1707,14 @@ class DashboardMyInfoButton(discord.ui.Button):
             embed.add_field(name="Key", value=_mask_key(user.get("key")), inline=False)
             embed.add_field(name="HWID", value=user.get("hwid") or "Not set", inline=True)
             embed.add_field(name="Joined", value=user.get("joined_at") or "Unknown", inline=True)
-            embed.add_field(name="Last Login", value=user.get("last_login") or "Never", inline=True)
             embed.add_field(name="Access Expires", value=_format_access_expiry(user), inline=True)
             embed.add_field(name="Luarmor", value=_format_luarmor_status(user), inline=False)
-            embed.add_field(
-                name="Stats",
-                value=(
-                    f"Redeems: `{user.get('redeem_count', 0)}`\n"
-                    f"Logins: `{user.get('login_count', 0)}`"
-                ),
-                inline=False,
-            )
+            if user.get("redeem_count"):
+                embed.add_field(
+                    name="Stats",
+                    value=f"Redeems: `{user.get('redeem_count', 0)}`",
+                    inline=False,
+                )
         else:
             embed.add_field(
                 name="Status",
@@ -1838,15 +1835,7 @@ def _build_userpanel_description(
     else:
         joined_display = "Unknown"
         
-    last_login_raw = str(user.get("last_login") or "").strip()
-    if last_login_raw:
-        try:
-            last_login_dt = datetime.fromisoformat(last_login_raw)
-            last_login_display = discord.utils.format_dt(last_login_dt, "R")
-        except ValueError:
-            last_login_display = last_login_raw
-    else:
-        last_login_display = "Never"
+
     expiry_display = _format_access_expiry(user)
 
     luarmor_key = str(user.get("luarmor_user_key") or "").strip()
@@ -1863,7 +1852,6 @@ def _build_userpanel_description(
         _userpanel_status_line("Access Expires", expiry_display, "\u23f3"),
         "",
         _userpanel_status_line("Joined", joined_display, "\U0001f4c5"),
-        _userpanel_status_line("Last Login", last_login_display, "\U0001f552"),
     ]
 
     if luarmor_key:
@@ -1876,12 +1864,11 @@ def _build_userpanel_description(
             lines.append(f"Ban Reason: {discord.utils.escape_markdown(ban_reason)}")
 
     redeem_count = user.get("redeem_count", 0)
-    login_count = user.get("login_count", 0)
-    if redeem_count or login_count:
+    if redeem_count:
         stats_e = _userpanel_emoji_str(pe, "stats", "\U0001f4ca")
         lines.append("")
         lines.append(f"{stats_e} **Stats**")
-        lines.append(f"Redeems: `{redeem_count}` | Logins: `{login_count}`")
+        lines.append(f"Redeems: `{redeem_count}`")
 
     return "\n".join(lines)
 
@@ -2819,7 +2806,6 @@ async def myinfo(interaction: discord.Interaction) -> None:
         embed.add_field(name="Key", value=_mask_key(user.get("key")), inline=False)
         embed.add_field(name="HWID", value=user.get("hwid") or "Not set", inline=True)
         embed.add_field(name="Joined", value=user.get("joined_at") or "Unknown", inline=True)
-        embed.add_field(name="Last Login", value=user.get("last_login") or "Never", inline=True)
         embed.add_field(name="Access Expires", value=_format_access_expiry(user), inline=True)
         if expired:
             embed.add_field(name="Access Status", value="\u26d4 **Expired** — Redeem a new key.", inline=False)
@@ -2827,8 +2813,7 @@ async def myinfo(interaction: discord.Interaction) -> None:
         embed.add_field(
             name="Stats",
             value=(
-                f"Redeems: `{user.get('redeem_count', 0)}`\n"
-                f"Logins: `{user.get('login_count', 0)}`"
+                f"Redeems: `{user.get('redeem_count', 0)}`"
             ),
             inline=False,
         )
@@ -3032,12 +3017,11 @@ async def lookup(interaction: discord.Interaction, user: str) -> None:
     embed.add_field(name="Key", value=f"`{record.get('key') or 'None'}`", inline=False)
     embed.add_field(name="HWID", value=record.get("hwid") or "Not set", inline=True)
     embed.add_field(name="Joined", value=record.get("joined_at") or "Unknown", inline=True)
-    embed.add_field(name="Last Login", value=record.get("last_login") or "Never", inline=True)
     embed.add_field(name="Access Expires", value=_format_access_expiry(record), inline=True)
     embed.add_field(name="Luarmor", value=_format_luarmor_status(record), inline=False)
     embed.add_field(
         name="Stats",
-        value=f"Redeems: `{record.get('redeem_count', 0)}`\nLogins: `{record.get('login_count', 0)}`",
+        value=f"Redeems: `{record.get('redeem_count', 0)}`",
         inline=False,
     )
     status_text = "Blacklisted" if is_banned else ("Active" if record.get("key") else "Inactive")
