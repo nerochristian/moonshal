@@ -17,7 +17,6 @@ from discord import app_commands
 from discord.ext import commands
 
 from components_v2 import branded_panel_container, ensure_layout_view_action_rows
-from ticket_system import init_ticket_system
 from whitelist_system import KEY_PREFIX, LuarmorSyncError, build_store_from_env
 from welcome_system import init_welcome_system
 
@@ -45,12 +44,13 @@ BOT_TOKEN: Optional[str] = os.getenv("DISCORD_BOT_TOKEN")
 DEV_GUILD_ID: Optional[str] = os.getenv("DISCORD_GUILD_ID")
 
 THESEUS_PURPLE = 0x8b5cf6
-ALLOWED_ROLE_ID = 1459425844165345423
-ANNOUNCEMENT_CHANNEL_ID = 1479833160136130632
-UPDATE_CHANNEL_ID = 1479834369249247323
-DOWNLOAD_CHANNEL_ID = 1479835427484729404
-SUPPORTED_CHANNEL_ID = 1481525548055531520
-WELCOME_CHANNEL_ID = int(os.getenv("WELCOME_CHANNEL_ID", "1480307153549000869"))
+ALLOWED_ROLE_ID = int(os.getenv("ALLOWED_ROLE_ID") or "0")
+ANNOUNCEMENT_CHANNEL_ID = int(os.getenv("ANNOUNCEMENT_CHANNEL_ID") or "0")
+UPDATE_CHANNEL_ID = int(os.getenv("UPDATE_CHANNEL_ID") or "0")
+DOWNLOAD_CHANNEL_ID = int(os.getenv("DOWNLOAD_CHANNEL_ID") or "0")
+SUPPORTED_CHANNEL_ID = int(os.getenv("SUPPORTED_CHANNEL_ID") or "0")
+SUPPORT_CHANNEL_ID = int(os.getenv("SUPPORT_CHANNEL_ID") or "0")
+WELCOME_CHANNEL_ID = int(os.getenv("WELCOME_CHANNEL_ID") or "0")
 UPDATE_PANEL_TITLE = "ZYPHRAXHUB COMMUNITY WINDOWS UPDATE"
 SERVER_NAME = os.getenv("SERVER_NAME", "ZyphraxHub Community")
 SERVER_TAG = os.getenv("SERVER_TAG", SERVER_NAME)
@@ -131,30 +131,6 @@ class TheseusBot(commands.Bot):
         intents = discord.Intents.default()
         intents.members = True
         super().__init__(command_prefix=commands.when_mentioned, intents=intents)
-        self.ticket_system = init_ticket_system(
-            self, base_dir=BASE_DIR, allowed_role_id=ALLOWED_ROLE_ID
-        )
-        self.welcome_system = (
-            init_welcome_system(
-                self,
-                welcome_channel_id=WELCOME_CHANNEL_ID,
-                server_name=SERVER_NAME,
-                server_tag=SERVER_TAG,
-                accent_color=THESEUS_PURPLE,
-                background_path=WELCOME_BG_PATH,
-            )
-            if WELCOME_CHANNEL_ID > 0
-            else None
-        )
-
-class TheseusBot(commands.Bot):
-    def __init__(self) -> None:
-        intents = discord.Intents.default()
-        intents.members = True
-        super().__init__(command_prefix=commands.when_mentioned, intents=intents)
-        self.ticket_system = init_ticket_system(
-            self, base_dir=BASE_DIR, allowed_role_id=ALLOWED_ROLE_ID
-        )
         self.welcome_system = (
             init_welcome_system(
                 self,
@@ -169,7 +145,6 @@ class TheseusBot(commands.Bot):
         )
 
     async def setup_hook(self) -> None:
-        self.ticket_system.setup()
         if self.welcome_system is not None:
             self.welcome_system.setup()
         self.add_view(ensure_layout_view_action_rows(PayPanelView()))
@@ -674,12 +649,12 @@ def _dashboard_summary_text(user: Optional[dict[str, object]], *, is_banned: boo
     if is_banned:
         return "Your account is blacklisted. Contact staff if you think this is a mistake."
     if _is_access_expired(user):
-        return "Your license has **expired**. Redeem a new key or open a ticket for help."
+        return "Your license has **expired**. Redeem a new key or contact support for help."
     if user is None or not user.get("key"):
         return "Use the `Redeem Key` button below to activate your ZyphraxHub Community license."
     return (
         "Your ZyphraxHub Community license is active.\n"
-        "Use `My Info` to inspect your account details or `Create Ticket` if you need help."
+        "Use `My Info` to inspect your account details."
     )
 
 
@@ -1051,10 +1026,13 @@ async def _resolve_roblox_game(place_id: int) -> Optional[dict[str, str | int]]:
             game_payload = json.loads(resp.read().decode("utf-8"))
 
         data = game_payload.get("data")
-        if not isinstance(data, list) or not data or not isinstance(data, dict):
+        if not isinstance(data, list) or not data:
             return None
 
-        game = data
+        game = data[0]
+        if not isinstance(game, dict):
+            return None
+
         name = game.get("name")
         root_place_id = game.get("rootPlaceId")
         if not isinstance(name, str) or not isinstance(root_place_id, int):
@@ -1376,7 +1354,7 @@ def _build_paypanel_description_v2(panel_emojis: dict[str, discord.Emoji]) -> st
         "Transaction ID, amount, name, timestamp, screenshot\n\n"
         f"{_paypanel_emoji_text(panel_emojis, 'done')} **Process**\n"
         "Choose plan and pay\n"
-        "Open ticket\n"
+        f"Go to <#{SUPPORT_CHANNEL_ID}> for help\n"
         "Attach proof\n"
         "Wait Whitelist Manager response\n\n"
         "`ZyphraxHub | Secure | Fast`"
@@ -1394,7 +1372,7 @@ def _build_paypanel_description() -> str:
         "Transaction ID, amount, name, timestamp, screenshot\n\n"
         "**Process**\n"
         "Choose plan and pay\n"
-        "Open ticket\n"
+        f"Go to <#{SUPPORT_CHANNEL_ID}> for help\n"
         "Attach proof\n"
         "Wait Whitelist Manager response\n\n"
         "`ZyphraxHub  •  Secure  •  Fast`"
@@ -1407,13 +1385,13 @@ def _build_paypanel_paypal_text() -> tuple[str, str]:
         description = (
             "Use the link below to pay with PayPal.\n\n"
             f"[PayPal (Click Blue Text)]({PAYPAL_URL})\n\n"
-            "Attach proof in a ticket after payment."
+            f"Go to <#{SUPPORT_CHANNEL_ID}> after payment with your proof."
         )
     else:
         description = (
             "PayPal is not configured yet.\n\n"
             "Set `PAYPAL_URL` in `.env` to enable the PayPal button.\n\n"
-            "Attach proof in a ticket after payment."
+            f"Go to <#{SUPPORT_CHANNEL_ID}> after payment with your proof."
         )
     return title, description
 
@@ -1428,7 +1406,7 @@ def _build_paypanel_crypto_text() -> tuple[str, str]:
             f"`{LITECOIN_ADDRESS}`\n\n"
             "**Proof Needed**\n"
             "Transaction ID, amount, name, timestamp, screenshot\n\n"
-            "Pay, then open a ticket and attach your proof."
+            f"Pay, then go to <#{SUPPORT_CHANNEL_ID}> and attach your proof."
         ),
     )
 
@@ -1444,63 +1422,35 @@ def _build_paypanel_qris_text() -> tuple[str, str]:
     return (
         "QRIS Payment",
         (
-            "Scan the QR code, open a ticket, and attach your proof.\n\n"
+            "Scan the QR code and attach your proof in the support channel.\n\n"
             "**Proof Needed**\n"
             "Transaction ID, amount, name, timestamp, screenshot\n\n"
-            "After payment, open a ticket and attach your proof."
+            f"After payment, go to <#{SUPPORT_CHANNEL_ID}> and attach your proof."
             f"{missing_note}"
         ),
     )
 
 
-class PaymentProofModal(discord.ui.Modal):
-    def __init__(self, *, payment_method: str) -> None:
-        self.payment_method = payment_method
-        super().__init__(title=f"{payment_method} Payment Proof", timeout=300)
-
-        self.plan = discord.ui.TextInput(
-            label="Plan",
-            placeholder="Weekly, Monthly, or Lifetime",
-            required=True,
-            max_length=50,
-        )
-        self.proof_details = discord.ui.TextInput(
-            label="Proof Details",
-            placeholder="Transaction ID, amount, name, timestamp, and any extra details",
-            required=True,
-            style=discord.TextStyle.paragraph,
-            max_length=1000,
-        )
-        self.add_item(self.plan)
-        self.add_item(self.proof_details)
-
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        details = (
-            f"Payment Method: {self.payment_method}\n"
-            f"Plan: {self.plan.value.strip()}\n"
-            f"Proof Details: {self.proof_details.value.strip()}\n"
-            "Reminder: Attach your payment screenshot in the created ticket."
-        )
-        await bot.ticket_system.create_ticket_from_modal(
-            interaction,
-            category="general",
-            details=details,
-        )
-
-
-class PayPanelCreateTicketButton(discord.ui.Button):
-    def __init__(self, *, payment_method: str) -> None:
+class SupportChannelButton(discord.ui.Button):
+    def __init__(self) -> None:
         super().__init__(
             style=discord.ButtonStyle.secondary,
-            label="Create Ticket",
-            custom_id=f"zyphraxhub_paypanel_ticket_{payment_method.lower()}",
+            label="Support",
+            custom_id="zyphraxhub_support_redirect",
+            emoji="\U0001f4e9",
         )
-        self.payment_method = payment_method
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        await interaction.response.send_modal(
-            PaymentProofModal(payment_method=self.payment_method)
-        )
+        if SUPPORT_CHANNEL_ID:
+            await interaction.response.send_message(
+                f"Head to <#{SUPPORT_CHANNEL_ID}> for support.",
+                ephemeral=True,
+            )
+        else:
+            await interaction.response.send_message(
+                "Support channel is not configured yet.",
+                ephemeral=True,
+            )
 
 
 class PayPanelMethodView(discord.ui.LayoutView):
@@ -1530,7 +1480,7 @@ class PayPanelMethodView(discord.ui.LayoutView):
                 PayPanelPaypalButton(panel_emojis),
                 PayPanelCryptoButton(panel_emojis),
                 PayPanelQrisButton(panel_emojis),
-                PayPanelCreateTicketButton(payment_method=selected_method),
+                SupportChannelButton(),
             )
         )
         self.add_item(container)
@@ -1615,7 +1565,7 @@ class PayPanelView(discord.ui.LayoutView):
                 PayPanelPaypalButton(panel_emojis),
                 PayPanelCryptoButton(panel_emojis),
                 PayPanelQrisButton(panel_emojis),
-                PayPanelCreateTicketButton(payment_method="Payment"),
+                SupportChannelButton(),
             )
         )
         self.add_item(container)
@@ -1761,7 +1711,7 @@ class UserDashboardView(discord.ui.LayoutView):
             discord.ui.ActionRow(
                 DashboardRedeemButton(),
                 DashboardMyInfoButton(),
-                PayPanelCreateTicketButton(payment_method="General Support"),
+                SupportChannelButton(),
                 DashboardRefreshButton(),
             )
         )
@@ -1802,7 +1752,7 @@ def _build_userpanel_description(
             _userpanel_status_line("Status", "Blacklisted", x_e),
             "",
             "Your account has been **blacklisted**.\n"
-            "If you believe this is an error, please open a ticket.",
+            f"If you believe this is an error, go to <#{SUPPORT_CHANNEL_ID}> for help.",
         ]
         return "\n".join(lines)
 
@@ -1950,21 +1900,28 @@ class UserPanelRefreshButton(discord.ui.Button):
         )
 
 
-class UserPanelTicketButton(discord.ui.Button):
+class UserPanelSupportButton(discord.ui.Button):
     def __init__(self, panel_emojis: Optional[dict[str, discord.Emoji]] = None) -> None:
         pe = panel_emojis or {}
         custom_emoji: Optional[discord.Emoji] = pe.get("ticket")
         super().__init__(
             style=discord.ButtonStyle.secondary,
-            label="Open Ticket",
-            custom_id="zyphraxhub_userpanel_ticket",
+            label="Support",
+            custom_id="zyphraxhub_userpanel_support",
             emoji=custom_emoji or "\U0001f4e9",
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        await interaction.response.send_modal(
-            PaymentProofModal(payment_method="Support")
-        )
+        if SUPPORT_CHANNEL_ID:
+            await interaction.response.send_message(
+                f"Head to <#{SUPPORT_CHANNEL_ID}> for support.",
+                ephemeral=True,
+            )
+        else:
+            await interaction.response.send_message(
+                "Support channel is not configured yet.",
+                ephemeral=True,
+            )
 
 
 class UserPanelView(discord.ui.LayoutView):
@@ -2003,7 +1960,7 @@ class UserPanelView(discord.ui.LayoutView):
         buttons: list[discord.ui.Button] = [UserPanelRedeemButton(pe)]
         if has_key:
             buttons.append(UserPanelResetHWIDButton(pe))
-        buttons.append(UserPanelTicketButton(pe))
+        buttons.append(UserPanelSupportButton(pe))
         buttons.append(UserPanelRefreshButton(pe))
 
         container.add_item(discord.ui.ActionRow(*buttons))
@@ -2199,12 +2156,6 @@ def _build_help_embed(interaction: discord.Interaction) -> discord.Embed:
 
     member = interaction.user if isinstance(interaction.user, discord.Member) else None
     is_staff = member is not None and _member_has_role(member, ALLOWED_ROLE_ID)
-    is_ticket_mgmt = (
-        member is not None
-        and interaction.guild is not None
-        and bot.ticket_system.is_management_member(member)
-    )
-    is_ticket_staff = member is not None and bot.ticket_system.is_ticket_staff(member)
 
     embed.add_field(
         name="Everyone",
@@ -2214,38 +2165,17 @@ def _build_help_embed(interaction: discord.Interaction) -> discord.Embed:
             "`/userpanel` Open your full account panel with Luarmor info.\n"
             "`/supported` Show the current supported games list.\n"
             "`/redeem` Redeem a ZyphraxHub Community key.\n"
-            "`/myinfo` View your whitelist account information.\n"
-            "`/ticket create` Open a support ticket from a category picker.\n"
-            "`/ticket close` Close your current ticket when it is resolved."
+            "`/myinfo` View your whitelist account information."
         ),
         inline=False,
     )
     embed.add_field(
-        name="Ticket Staff",
-        value=(
-            "`/ticket add` Add a member to the current ticket.\n"
-            "`/ticket remove` Remove a member from the current ticket.\n"
-            "`/ticket rename` Rename the current ticket channel.\n"
-            "`/ticket transcript` Generate an HTML transcript.\n"
-            "`/ticket panel` Post the ticket creation panel.\n"
-            "`/ticketpanel` Legacy alias for `/ticket panel`."
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name="Ticket Management",
-        value=(
-            "`/ticket setup` Configure the ticket category, support role, and optional log channel.\n"
-            "`/ticket settings` Show the current ticket configuration."
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name="Announcement Staff",
+        name="Staff Commands",
         value=(
             f"`/say` Send plain text or one attachment in the current channel.\n"
-            f"`/announce` Post an announcement embed with an optional attachment in <#{ANNOUNCEMENT_CHANNEL_ID}>.\n"
+            f"`/announce` Post an announcement embed in <#{ANNOUNCEMENT_CHANNEL_ID}>.\n"
             "`/paypanel` Post the purchase panel in the current channel.\n"
+            "`/sendpanel` Post the persistent global Panel.\n"
             "`/whitelist` Auto-whitelist a user and assign a key.\n"
             "`/unwhitelist` Remove a user and release their key.\n"
             "`/blacklist`, `/unblacklist`, `/resethwid` manage access state.\n"
@@ -2262,10 +2192,8 @@ def _build_help_embed(interaction: discord.Interaction) -> discord.Embed:
     embed.add_field(
         name="Your Access",
         value="\n".join([
-            f"Announcement role: <@&{ALLOWED_ROLE_ID}>",
-            f"Ticket staff access: {'Yes' if is_ticket_staff else 'No'}",
-            f"Ticket management access: {'Yes' if is_ticket_mgmt else 'No'}",
-            f"Announcement access: {'Yes' if is_staff else 'No'}",
+            f"Staff role: <@&{ALLOWED_ROLE_ID}>",
+            f"Staff access: {'Yes' if is_staff else 'No'}",
         ]),
         inline=False,
     )
@@ -2277,8 +2205,7 @@ def _build_help_embed(interaction: discord.Interaction) -> discord.Embed:
             "`/update` requires notes and a build attachment; changelog entries are optional.\n"
             "`/panel` and `/myinfo` show your current local whitelist status.\n"
             "`/redeem` accepts either the local ZyphraxHub key format or Luarmor-issued keys.\n"
-            "`/support add` expects a Roblox game link and resolves the game name automatically.\n"
-            "Ticket panel actions and ticket commands must be used inside a server."
+            "`/support add` expects a Roblox game link and resolves the game name automatically."
         ),
         inline=False,
     )
@@ -2540,7 +2467,7 @@ async def update(
         )
         return
 
-    download_url = sent.attachments.url
+    download_url = sent.attachments[0].url
     panel_view = ensure_layout_view_action_rows(
         UpdatePanelView(
             version=version_text,
@@ -2667,10 +2594,10 @@ async def userpanel(interaction: discord.Interaction) -> None:
     )
 
 
-@bot.tree.command(name="userpanel", description="Post the persistent global Panel to the current channel")
+@bot.tree.command(name="sendpanel", description="Post the persistent global Panel to the current channel")
 @allowed_role_only()
 @app_commands.guild_only()
-async def userpanel(interaction: discord.Interaction) -> None:
+async def sendpanel(interaction: discord.Interaction) -> None:
     if not isinstance(interaction.channel, discord.TextChannel):
         await interaction.response.send_message("This command must be used in a text channel.", ephemeral=True)
         return
