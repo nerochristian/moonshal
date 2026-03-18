@@ -183,6 +183,7 @@ class TheseusBot(commands.Bot):
 
     async def _sync_commands(self) -> None:
         if DEV_GUILD_ID:
+            guild = discord.Object(id=int(DEV_GUILD_ID))
             self.tree.copy_global_to(guild=guild)
             try:
                 synced = await self.tree.sync(guild=guild)
@@ -2158,28 +2159,30 @@ class GlobalUserPanelStatsButton(discord.ui.Button):
 
 
 class GlobalUserPanelView(discord.ui.LayoutView):
-    def __init__(self, panel_emojis: Optional[dict[str, discord.Emoji]] = None) -> None:
+    def __init__(self, panel_emojis: Optional[dict[str, discord.Emoji]] = None, guild: Optional[discord.Guild] = None) -> None:
         super().__init__(timeout=None)
         
+        icon_url = guild.icon.url if guild and guild.icon else None
+        title = f"{guild.name} Account Panel" if guild else "Account Panel"
+        
+        container = branded_panel_container(
+            title=title,
+            description="Select an option below to manage your account or get the script.",
+            logo_url=icon_url,
+            accent_color=THESEUS_BLUE,
+        )
+        container.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.large))
+        
         btn1 = GlobalUserPanelRedeemButton(panel_emojis)
-        btn1.row = 0
-        self.add_item(btn1)
-        
         btn2 = GlobalUserPanelScriptButton()
-        btn2.row = 0
-        self.add_item(btn2)
-        
         btn3 = GlobalUserPanelRoleButton()
-        btn3.row = 0
-        self.add_item(btn3)
-        
         btn4 = GlobalUserPanelResetHWIDButton(panel_emojis)
-        btn4.row = 0
-        self.add_item(btn4)
-        
         btn5 = GlobalUserPanelStatsButton(panel_emojis)
-        btn5.row = 1
-        self.add_item(btn5)
+        
+        container.add_item(discord.ui.ActionRow(btn1, btn2, btn3, btn4))
+        container.add_item(discord.ui.ActionRow(btn5))
+        
+        self.add_item(container)
 
 
 def _build_help_embed(interaction: discord.Interaction) -> discord.Embed:
@@ -2672,18 +2675,8 @@ async def senduserpanel(interaction: discord.Interaction) -> None:
         
     await interaction.response.defer(ephemeral=True)
     panel_emojis = await _ensure_userpanel_emojis(interaction.guild, interaction.client)
-    
-    embed = discord.Embed(
-        color=THESEUS_BLUE,
-        description="Select an option below to manage your account or get the script."
-    )
-    if interaction.guild and interaction.guild.icon:
-        embed.set_author(name=f"{interaction.guild.name} Account Panel", icon_url=interaction.guild.icon.url)
-    else:
-        embed.set_author(name="Account Panel")
-    
-    view = ensure_layout_view_action_rows(GlobalUserPanelView(panel_emojis=panel_emojis))
-    await interaction.channel.send(embed=embed, view=view)
+    view = ensure_layout_view_action_rows(GlobalUserPanelView(panel_emojis=panel_emojis, guild=interaction.guild))
+    await interaction.channel.send(view=view)
     await interaction.followup.send("Global UserPanel successfully sent.", ephemeral=True)
 
 
