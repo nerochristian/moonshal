@@ -2179,7 +2179,8 @@ class GlobalUserPanelView(discord.ui.LayoutView):
         btn4 = GlobalUserPanelResetHWIDButton(panel_emojis)
         btn5 = GlobalUserPanelStatsButton(panel_emojis)
         
-        container.add_item(discord.ui.ActionRow(btn1, btn2, btn3, btn4))
+        container.add_item(discord.ui.ActionRow(btn1, btn2, btn3))
+        container.add_item(discord.ui.ActionRow(btn4))
         container.add_item(discord.ui.ActionRow(btn5))
         
         self.add_item(container)
