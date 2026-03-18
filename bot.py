@@ -313,6 +313,56 @@ def _mask_key(key: Optional[str]) -> str:
     return f"||`{key}`||"
 
 
+def _format_access_expiry(user: Optional[dict[str, object]]) -> str:
+    if user is None:
+        return "Permanent"
+    expires_at = str(user.get("access_expires_at") or "").strip()
+    return expires_at or "Permanent"
+
+
+def _format_key_duration(days: Optional[int]) -> str:
+    if days is None:
+        return "Permanent"
+    return f"{days} day{'s' if days != 1 else ''}"
+
+
+def _build_key_export(keys: list[dict[str, object]]) -> str:
+    if not keys:
+        return "No keys found."
+    return "\n".join(
+        (
+            f"{row['key']} | "
+            f"{'used' if row['used'] else 'free'} | "
+            f"duration={_format_key_duration(row.get('duration_days'))}"
+        )
+        for row in keys
+    )
+
+
+class KeylistDownloadButton(discord.ui.Button):
+    def __init__(self, *, export_text: str, filename: str) -> None:
+        super().__init__(label="Download Keys", style=discord.ButtonStyle.primary)
+        self.export_text = export_text
+        self.filename = filename
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        file = discord.File(
+            fp=io.BytesIO(self.export_text.encode("utf-8")),
+            filename=self.filename,
+        )
+        await interaction.response.send_message(
+            content="Full key export:",
+            file=file,
+            ephemeral=True,
+        )
+
+
+class KeylistDownloadView(discord.ui.View):
+    def __init__(self, *, export_text: str, filename: str) -> None:
+        super().__init__(timeout=300)
+        self.add_item(KeylistDownloadButton(export_text=export_text, filename=filename))
+
+
 def _dashboard_status_text(user: Optional[dict[str, object]], *, is_banned: bool) -> str:
     license_value = user.get("key") if user is not None else None
     hwid_value = user.get("hwid") if user is not None else None
@@ -1304,18 +1354,20 @@ class DashboardMyInfoButton(discord.ui.Button):
     async def callback(self, interaction: discord.Interaction) -> None:
         user = await whitelist_store.get_user_with_stats(interaction.user.id)
         is_banned = await whitelist_store.is_blacklisted(interaction.user.id)
-        color = 0xE74C3C if is_banned else (0x2ECC71 if user else 0xF1C40F)
+        has_active_key = bool(user and user.get("key"))
+        color = 0xE74C3C if is_banned else (0x2ECC71 if has_active_key else 0xF1C40F)
         embed = _whitelist_embed("Your Whitelist Account", color=color)
         embed.add_field(
             name="User",
             value=f"{interaction.user.mention}\nID: `{interaction.user.id}`",
             inline=False,
         )
-        if user is not None:
+        if user is not None and user.get("key"):
             embed.add_field(name="Key", value=_mask_key(user.get("key")), inline=False)
             embed.add_field(name="HWID", value=user.get("hwid") or "Not set", inline=True)
             embed.add_field(name="Joined", value=user.get("joined_at") or "Unknown", inline=True)
             embed.add_field(name="Last Login", value=user.get("last_login") or "Never", inline=True)
+            embed.add_field(name="Access Expires", value=_format_access_expiry(user), inline=True)
             embed.add_field(name="Luarmor", value=_format_luarmor_status(user), inline=False)
             embed.add_field(
                 name="Stats",
@@ -1448,7 +1500,7 @@ def _build_help_embed(interaction: discord.Interaction) -> discord.Embed:
             "`/blacklist`, `/unblacklist`, `/resethwid` manage access state.\n"
             "`/lookup` Inspect a whitelist record.\n"
             "`/luarmorsync`, `/luarmoraudit` inspect Luarmor sync.\n"
-            "`/genkey`, `/masskey`, `/keylist`, `/purgekeys` manage keys.\n"
+            "`/genkey`, `/masskey`, `/keylist`, `/delkey`, `/purgekeys` manage keys.\n"
             f"`/update` Upload a build and post the update panel in <#{UPDATE_CHANNEL_ID}>.\n"
             f"`/support add` Add a Roblox game to the supported list.\n"
             f"`/support remove` Remove a supported game from the list."
@@ -1851,18 +1903,20 @@ async def panel(interaction: discord.Interaction) -> None:
 async def myinfo(interaction: discord.Interaction) -> None:
     user = await whitelist_store.get_user_with_stats(interaction.user.id)
     is_banned = await whitelist_store.is_blacklisted(interaction.user.id)
-    color = 0xE74C3C if is_banned else (0x2ECC71 if user else 0xF1C40F)
+    has_active_key = bool(user and user.get("key"))
+    color = 0xE74C3C if is_banned else (0x2ECC71 if has_active_key else 0xF1C40F)
     embed = _whitelist_embed("Your Whitelist Account", color=color)
     embed.add_field(
         name="User",
         value=f"{interaction.user.mention}\nID: `{interaction.user.id}`",
         inline=False,
     )
-    if user is not None:
+    if user is not None and user.get("key"):
         embed.add_field(name="Key", value=_mask_key(user.get("key")), inline=False)
         embed.add_field(name="HWID", value=user.get("hwid") or "Not set", inline=True)
         embed.add_field(name="Joined", value=user.get("joined_at") or "Unknown", inline=True)
         embed.add_field(name="Last Login", value=user.get("last_login") or "Never", inline=True)
+        embed.add_field(name="Access Expires", value=_format_access_expiry(user), inline=True)
         embed.add_field(name="Luarmor", value=_format_luarmor_status(user), inline=False)
         embed.add_field(
             name="Stats",
@@ -1896,8 +1950,32 @@ async def whitelist(
         await interaction.response.send_message("Bots cannot be whitelisted.", ephemeral=True)
         return
 
+    if await whitelist_store.is_blacklisted(member.id):
+        reason = await whitelist_store.get_blacklist_reason(member.id)
+        embed = _whitelist_embed(
+            "Cannot Whitelist",
+            f"{member.mention} is blacklisted and cannot receive a key.",
+            color=0xE74C3C,
+        )
+        if reason:
+            embed.add_field(name="Blacklist Reason", value=discord.utils.escape_markdown(reason), inline=False)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+
     await interaction.response.defer(ephemeral=True)
-    key = await whitelist_store.whitelist_user(member.id, created_by=interaction.user.id)
+    try:
+        key = await whitelist_store.whitelist_user(member.id, created_by=interaction.user.id)
+    except ValueError:
+        reason = await whitelist_store.get_blacklist_reason(member.id)
+        embed = _whitelist_embed(
+            "Cannot Whitelist",
+            f"{member.mention} is blacklisted and cannot receive a key.",
+            color=0xE74C3C,
+        )
+        if reason:
+            embed.add_field(name="Blacklist Reason", value=discord.utils.escape_markdown(reason), inline=False)
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        return
     dm_status = "Not sent"
     if send_dm:
         try:
@@ -2048,13 +2126,15 @@ async def lookup(interaction: discord.Interaction, user: str) -> None:
     embed.add_field(name="HWID", value=record.get("hwid") or "Not set", inline=True)
     embed.add_field(name="Joined", value=record.get("joined_at") or "Unknown", inline=True)
     embed.add_field(name="Last Login", value=record.get("last_login") or "Never", inline=True)
+    embed.add_field(name="Access Expires", value=_format_access_expiry(record), inline=True)
     embed.add_field(name="Luarmor", value=_format_luarmor_status(record), inline=False)
     embed.add_field(
         name="Stats",
         value=f"Redeems: `{record.get('redeem_count', 0)}`\nLogins: `{record.get('login_count', 0)}`",
         inline=False,
     )
-    embed.add_field(name="Status", value="Blacklisted" if is_banned else "Active", inline=False)
+    status_text = "Blacklisted" if is_banned else ("Active" if record.get("key") else "Inactive")
+    embed.add_field(name="Status", value=status_text, inline=False)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
@@ -2128,19 +2208,27 @@ async def luarmoraudit(interaction: discord.Interaction) -> None:
 @bot.tree.command(name="genkey", description="Generate one or more ZyphraxHub Community keys")
 @app_commands.guild_only()
 @allowed_role_only()
-@app_commands.describe(amount="Number of keys to generate (1-25)")
-async def genkey(interaction: discord.Interaction, amount: int = 1) -> None:
+@app_commands.describe(
+    amount="Number of keys to generate (1-25)",
+    days="Optional access duration in days after the key is redeemed",
+)
+async def genkey(
+    interaction: discord.Interaction,
+    amount: int = 1,
+    days: Optional[app_commands.Range[int, 1, 3650]] = None,
+) -> None:
     if amount < 1 or amount > 25:
         await interaction.response.send_message("Amount must be between 1 and 25.", ephemeral=True)
         return
 
     await interaction.response.defer(ephemeral=True)
-    keys = await whitelist_store.create_keys(amount, interaction.user.id)
+    keys = await whitelist_store.create_keys(amount, interaction.user.id, duration_days=days)
     embed = _whitelist_embed(
         "Keys Generated",
         f"Created **{len(keys)}** ZyphraxHub Community key(s).",
         color=0x2ECC71,
     )
+    embed.add_field(name="Duration", value=_format_key_duration(days), inline=True)
     if len(keys) <= 5:
         embed.add_field(name="Keys", value="\n".join(f"`{key}`" for key in keys), inline=False)
         await interaction.followup.send(embed=embed, ephemeral=True)
@@ -2156,16 +2244,24 @@ async def genkey(interaction: discord.Interaction, amount: int = 1) -> None:
 @bot.tree.command(name="masskey", description="Generate many ZyphraxHub Community keys at once")
 @app_commands.guild_only()
 @allowed_role_only()
-@app_commands.describe(count="Number of keys to generate (1-50)")
-async def masskey(interaction: discord.Interaction, count: int = 5) -> None:
+@app_commands.describe(
+    count="Number of keys to generate (1-50)",
+    days="Optional access duration in days after the key is redeemed",
+)
+async def masskey(
+    interaction: discord.Interaction,
+    count: int = 5,
+    days: Optional[app_commands.Range[int, 1, 3650]] = None,
+) -> None:
     count = max(1, min(count, 50))
     await interaction.response.defer(ephemeral=True)
-    keys = await whitelist_store.create_keys(count, interaction.user.id)
+    keys = await whitelist_store.create_keys(count, interaction.user.id, duration_days=days)
     embed = _whitelist_embed(
         f"Generated {len(keys)} Keys",
         "The keys were added to the local whitelist database.",
         color=0x2ECC71,
     )
+    embed.add_field(name="Duration", value=_format_key_duration(days), inline=True)
     if len(keys) > 10:
         file = discord.File(
             fp=io.BytesIO("\n".join(keys).encode("utf-8")),
@@ -2185,16 +2281,60 @@ async def masskey(interaction: discord.Interaction, count: int = 5) -> None:
 async def keylist(interaction: discord.Interaction, show_used: bool = False) -> None:
     stats = await whitelist_store.get_stats()
     keys = await whitelist_store.get_all_keys(include_used=show_used)
+    export_text = _build_key_export(keys)
+    export_name = f"zyphrax_keys_{'all' if show_used else 'unused'}_{int(time.time())}.txt"
     embed = _whitelist_embed("Key Statistics", "ZyphraxHub Community license overview")
     embed.add_field(name="Available", value=f"`{stats['available_keys']}`", inline=True)
     embed.add_field(name="Used", value=f"`{stats['used_keys']}`", inline=True)
     embed.add_field(name="Total", value=f"`{stats['total_keys']}`", inline=True)
     if keys:
         preview = "\n".join(
-            f"`{row['key']}` {'used' if row['used'] else 'free'}" for row in keys[:10]
+            (
+                f"`{row['key']}` "
+                f"{'used' if row['used'] else 'free'} "
+                f"({_format_key_duration(row.get('duration_days'))})"
+            )
+            for row in keys[:10]
         )
         embed.add_field(name="Preview", value=preview, inline=False)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    embed.add_field(name="Download", value="Use the **Download Keys** button below for the full export.", inline=False)
+    await interaction.response.send_message(
+        embed=embed,
+        view=KeylistDownloadView(export_text=export_text, filename=export_name),
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="delkey", description="Delete one unused ZyphraxHub Community key")
+@app_commands.guild_only()
+@allowed_role_only()
+@app_commands.describe(key="The unused key to delete")
+async def delkey(interaction: discord.Interaction, key: str) -> None:
+    normalized_key = key.strip()
+    if not normalized_key:
+        await interaction.response.send_message("Provide a key to delete.", ephemeral=True)
+        return
+
+    deleted = await whitelist_store.delete_unused_key(normalized_key)
+    if not deleted:
+        await interaction.response.send_message(
+            embed=_whitelist_embed(
+                "Key Not Deleted",
+                "That key was not found, or it is currently assigned to a user.",
+                color=0xE74C3C,
+            ),
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.send_message(
+        embed=_whitelist_embed(
+            "Key Deleted",
+            f"Deleted unused key `{normalized_key}`.",
+            color=0x2ECC71,
+        ),
+        ephemeral=True,
+    )
 
 
 @bot.tree.command(name="purgekeys", description="Delete all unused ZyphraxHub Community keys")
@@ -2346,6 +2486,7 @@ bot.tree.add_command(support_group)
 @genkey.error
 @masskey.error
 @keylist.error
+@delkey.error
 @purgekeys.error
 @say.error
 @announce.error
