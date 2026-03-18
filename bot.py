@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Optional
 from urllib import error as urllib_error
@@ -317,7 +318,16 @@ def _format_access_expiry(user: Optional[dict[str, object]]) -> str:
     if user is None:
         return "Permanent"
     expires_at = str(user.get("access_expires_at") or "").strip()
-    return expires_at or "Permanent"
+    if not expires_at:
+        return "Permanent"
+    try:
+        expiry = datetime.fromisoformat(expires_at)
+    except ValueError:
+        return expires_at
+    if expiry.tzinfo is None:
+        expiry = expiry.replace(tzinfo=UTC)
+    unix_timestamp = int(expiry.timestamp())
+    return f"<t:{unix_timestamp}:R>\n<t:{unix_timestamp}:F>"
 
 
 def _format_key_duration(days: Optional[int]) -> str:
@@ -1724,7 +1734,7 @@ def _build_help_embed(interaction: discord.Interaction) -> discord.Embed:
             "`/blacklist`, `/unblacklist`, `/resethwid` manage access state.\n"
             "`/lookup` Inspect a whitelist record.\n"
             "`/luarmorsync`, `/luarmoraudit` inspect Luarmor sync.\n"
-            "`/genkey`, `/masskey`, `/keylist`, `/delkey`, `/purgekeys` manage keys.\n"
+            "`/genkey`, `/keylist`, `/delkey`, `/purgekeys` manage keys.\n"
             f"`/update` Upload a build and post the update panel in <#{UPDATE_CHANNEL_ID}>.\n"
             f"`/support add` Add a Roblox game to the supported list.\n"
             f"`/support remove` Remove a supported game from the list."
@@ -2433,7 +2443,7 @@ async def luarmoraudit(interaction: discord.Interaction) -> None:
 @app_commands.guild_only()
 @allowed_role_only()
 @app_commands.describe(
-    amount="Number of keys to generate (1-25)",
+    amount="Number of keys to generate (1-50)",
     time="Optional access duration like `1 minute`, `1w`, `1month`, `1year`, or `lifetime`",
 )
 async def genkey(
@@ -2441,8 +2451,8 @@ async def genkey(
     amount: int = 1,
     time: Optional[str] = None,
 ) -> None:
-    if amount < 1 or amount > 25:
-        await interaction.response.send_message("Amount must be between 1 and 25.", ephemeral=True)
+    if amount < 1 or amount > 50:
+        await interaction.response.send_message("Amount must be between 1 and 50.", ephemeral=True)
         return
     duration_seconds, error = _parse_duration_input(time)
     if error == "AMBIGUOUS_MINUTE_MONTH":
@@ -2458,37 +2468,6 @@ async def genkey(
     await _send_generated_keys_response(
         interaction,
         count=amount,
-        duration_seconds=duration_seconds,
-    )
-
-
-@bot.tree.command(name="masskey", description="Generate many ZyphraxHub Community keys at once")
-@app_commands.guild_only()
-@allowed_role_only()
-@app_commands.describe(
-    count="Number of keys to generate (1-50)",
-    time="Optional access duration like `1 minute`, `1w`, `1month`, `1year`, or `lifetime`",
-)
-async def masskey(
-    interaction: discord.Interaction,
-    count: int = 5,
-    time: Optional[str] = None,
-) -> None:
-    count = max(1, min(count, 50))
-    duration_seconds, error = _parse_duration_input(time)
-    if error == "AMBIGUOUS_MINUTE_MONTH":
-        await interaction.response.send_message(
-            "You entered `1m`. Confirm whether you mean **1 minute** or **1 month**.",
-            view=DurationAmbiguityView(count=count),
-            ephemeral=True,
-        )
-        return
-    if error:
-        await interaction.response.send_message(error, ephemeral=True)
-        return
-    await _send_generated_keys_response(
-        interaction,
-        count=count,
         duration_seconds=duration_seconds,
     )
 
@@ -2699,7 +2678,6 @@ bot.tree.add_command(support_group)
 @luarmorsync.error
 @luarmoraudit.error
 @genkey.error
-@masskey.error
 @keylist.error
 @delkey.error
 @purgekeys.error

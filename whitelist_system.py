@@ -529,6 +529,7 @@ class WhitelistStore:
 
     async def key_exists_and_unused(self, key: str) -> bool:
         await self.ensure_initialized()
+        await self._expire_unused_generated_keys()
         normalized_key = key.strip()
 
         if self._pool is not None:
@@ -551,6 +552,7 @@ class WhitelistStore:
 
     async def redeem_key(self, discord_id: int | str, key: str) -> bool:
         await self.ensure_initialized()
+        await self._expire_unused_generated_keys()
         normalized_key = key.strip()
         discord_id_str = str(discord_id)
         current_time = datetime.now(UTC)
@@ -762,6 +764,7 @@ class WhitelistStore:
 
     async def get_all_keys(self, *, include_used: bool = True) -> list[dict[str, Any]]:
         await self.ensure_initialized()
+        await self._expire_unused_generated_keys()
 
         if self._pool is not None:
             query = "SELECT * FROM keys ORDER BY created_at DESC"
@@ -833,6 +836,7 @@ class WhitelistStore:
                     normalized_key,
                 )
             if deleted:
+                await self._delete_remote_generated_keys([normalized_key])
                 await self.log_event("delete_key", None, normalized_key)
                 return True
             return False
@@ -848,6 +852,7 @@ class WhitelistStore:
 
         deleted = await asyncio.to_thread(_run)
         if deleted:
+            await self._delete_remote_generated_keys([normalized_key])
             await self.log_event("delete_key", None, normalized_key)
         return deleted
 
@@ -1127,6 +1132,7 @@ class WhitelistStore:
 
     async def get_stats(self) -> dict[str, int]:
         await self.ensure_initialized()
+        await self._expire_unused_generated_keys()
 
         if self._pool is not None:
             async with self._pool.acquire() as connection:
@@ -1325,6 +1331,112 @@ class WhitelistStore:
             if column_name not in existing_columns:
                 connection.execute(f"ALTER TABLE keys ADD COLUMN {column_name} {column_type}")
 
+    @staticmethod
+    def _row_duration_seconds(row: dict[str, Any]) -> Optional[int]:
+        duration_seconds = row.get("duration_seconds")
+        if duration_seconds not in (None, ""):
+            return int(duration_seconds)
+        duration_days = row.get("duration_days")
+        if duration_days not in (None, ""):
+            return int(duration_days) * 86400
+        return None
+
+    @staticmethod
+    def _auth_expire_from_user(user: Optional[dict[str, Any]]) -> Optional[int]:
+        if user is None:
+            return None
+        access_expires_at = str(user.get("access_expires_at") or "").strip()
+        if not access_expires_at:
+            return -1
+        try:
+            expiry = datetime.fromisoformat(access_expires_at)
+        except ValueError:
+            return None
+        if expiry.tzinfo is None:
+            expiry = expiry.replace(tzinfo=UTC)
+        return int(expiry.timestamp())
+
+    async def _delete_remote_generated_keys(self, user_keys: list[str]) -> None:
+        if not self.uses_luarmor_keys:
+            return
+        for user_key in user_keys:
+            try:
+                await self.luarmor.delete_user(user_key=user_key)
+            except LuarmorSyncError as exc:
+                LOGGER.warning("Failed to delete expired Luarmor key %s: %s", user_key, exc)
+
+    async def _expire_unused_generated_keys(self) -> int:
+        await self.ensure_initialized()
+        now = datetime.now(UTC)
+
+        if self._pool is not None:
+            async with self._pool.acquire() as connection:
+                rows = await connection.fetch(
+                    "SELECT key, created_at, duration_days, duration_seconds FROM keys WHERE used = 0"
+                )
+                expired_keys: list[str] = []
+                for row in rows:
+                    row_data = dict(row)
+                    duration_seconds = self._row_duration_seconds(row_data)
+                    if duration_seconds is None:
+                        continue
+                    created_at_raw = str(row_data.get("created_at") or "").strip()
+                    if not created_at_raw:
+                        continue
+                    try:
+                        created_at = datetime.fromisoformat(created_at_raw)
+                    except ValueError:
+                        continue
+                    if created_at.tzinfo is None:
+                        created_at = created_at.replace(tzinfo=UTC)
+                    if created_at + timedelta(seconds=duration_seconds) <= now:
+                        expired_keys.append(str(row_data["key"]))
+                if not expired_keys:
+                    return 0
+                await self._delete_remote_generated_keys(expired_keys)
+                await connection.execute(
+                    "DELETE FROM keys WHERE key = ANY($1::text[])",
+                    expired_keys,
+                )
+            await self.log_event("expire_keys", None, f"Deleted {len(expired_keys)} expired unused key(s)")
+            return len(expired_keys)
+
+        def _run() -> list[str]:
+            with self._sqlite_connect() as connection:
+                rows = connection.execute(
+                    "SELECT key, created_at, duration_days, duration_seconds FROM keys WHERE used = 0"
+                ).fetchall()
+                expired_keys: list[str] = []
+                for row in rows:
+                    row_data = dict(row)
+                    duration_seconds = self._row_duration_seconds(row_data)
+                    if duration_seconds is None:
+                        continue
+                    created_at_raw = str(row_data.get("created_at") or "").strip()
+                    if not created_at_raw:
+                        continue
+                    try:
+                        created_at = datetime.fromisoformat(created_at_raw)
+                    except ValueError:
+                        continue
+                    if created_at.tzinfo is None:
+                        created_at = created_at.replace(tzinfo=UTC)
+                    if created_at + timedelta(seconds=duration_seconds) <= now:
+                        expired_keys.append(str(row_data["key"]))
+                if expired_keys:
+                    connection.executemany(
+                        "DELETE FROM keys WHERE key = ?",
+                        [(key,) for key in expired_keys],
+                    )
+                    connection.commit()
+                return expired_keys
+
+        expired_keys = await asyncio.to_thread(_run)
+        if expired_keys:
+            await self._delete_remote_generated_keys(expired_keys)
+            await self.log_event("expire_keys", None, f"Deleted {len(expired_keys)} expired unused key(s)")
+        return len(expired_keys)
+
     async def _expire_stale_users(self) -> None:
         timestamp = datetime.now(UTC).isoformat()
 
@@ -1498,6 +1610,7 @@ class WhitelistStore:
         user = await self.get_user(discord_id)
         existing_luarmor_key = None if user is None else user.get("luarmor_user_key")
         note = f"{KEY_PREFIX} local key: {local_key}"
+        auth_expire = self._auth_expire_from_user(user)
 
         remote_user: Optional[dict[str, Any]] = None
         remote_by_key = await self.luarmor.get_user_by_key(local_key)
@@ -1506,6 +1619,7 @@ class WhitelistStore:
                 user_key=str(remote_by_key["user_key"]),
                 discord_id=discord_id,
                 note=note,
+                auth_expire=auth_expire,
             )
             remote_user = await self.luarmor.get_user_by_key(str(remote_by_key["user_key"]))
         elif existing_luarmor_key:
@@ -1513,6 +1627,7 @@ class WhitelistStore:
                 user_key=str(existing_luarmor_key),
                 discord_id=discord_id,
                 note=note,
+                auth_expire=auth_expire,
             )
             remote_user = await self.luarmor.get_user_by_discord_id(discord_id)
         else:
@@ -1522,9 +1637,16 @@ class WhitelistStore:
                     user_key=str(remote_user["user_key"]),
                     discord_id=discord_id,
                     note=note,
+                    auth_expire=auth_expire,
                 )
             else:
-                created = await self.luarmor.create_user(discord_id=discord_id, note=note)
+                create_user_kwargs: dict[str, Any] = {
+                    "discord_id": discord_id,
+                    "note": note,
+                }
+                if auth_expire is not None:
+                    create_user_kwargs["auth_expire"] = auth_expire
+                created = await self.luarmor.create_user(**create_user_kwargs)
                 remote_user = None
                 if isinstance(created, dict) and created.get("user_key"):
                     remote_user = created
