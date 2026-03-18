@@ -97,21 +97,21 @@ PAYPANEL_QRIS_FILENAMES = (
     "payment_qris.jpeg",
 )
 PAYPANEL_ICON_CONFIGS: dict[str, dict[str, str]] = {
-    "key": {"emoji_name": "zyphraxhub_pay_key", "icon_file": "key.png", "fallback": "🛒"},
-    "paypal": {"emoji_name": "zyphraxhub_pay_paypal", "icon_file": "coin.png", "fallback": "💳"},
-    "crypto": {"emoji_name": "zyphraxhub_pay_crypto", "icon_file": "btc.png", "fallback": "🪙"},
-    "qris": {"emoji_name": "zyphraxhub_pay_qris", "icon_file": "uy.png", "fallback": "🇮🇩"},
-    "proof": {"emoji_name": "zyphraxhub_pay_proof", "icon_file": "message.png", "fallback": "🧾"},
-    "done": {"emoji_name": "zyphraxhub_pay_done", "icon_file": "tick.png", "fallback": "✅"},
+    "key": {"emoji_name": "zyphraxhub_pay_key", "icon_file": "key.png"},
+    "paypal": {"emoji_name": "zyphraxhub_pay_paypal", "icon_file": "coin.png"},
+    "crypto": {"emoji_name": "zyphraxhub_pay_crypto", "icon_file": "btc.png"},
+    "qris": {"emoji_name": "zyphraxhub_pay_qris", "icon_file": "uy.png"},
+    "proof": {"emoji_name": "zyphraxhub_pay_proof", "icon_file": "message.png"},
+    "done": {"emoji_name": "zyphraxhub_pay_done", "icon_file": "tick.png"},
 }
 
 UPDATE_ICON_CONFIGS: dict[str, dict[str, str]] = {
-    "windows":  {"emoji_name": "theseus_update_windows",  "icon_file": "windows.png",  "fallback": "💻"},
-    "settings": {"emoji_name": "theseus_update_settings", "icon_file": "setting.png",  "fallback": "⚙️"},
-    "download": {"emoji_name": "theseus_update_download", "icon_file": "download.png", "fallback": "⬇️"},
-    "notes":    {"emoji_name": "theseus_update_notes",    "icon_file": "message.png",  "fallback": "📝"},
-    "roblox":   {"emoji_name": "theseus_update_roblox",   "icon_file": "roblox.png",   "fallback": "🎮"},
-    "premium":  {"fallback": "💎"},
+    "windows":  {"emoji_name": "theseus_update_windows",  "icon_file": "windows.png"},
+    "settings": {"emoji_name": "theseus_update_settings", "icon_file": "setting.png"},
+    "download": {"emoji_name": "theseus_update_download", "icon_file": "download.png"},
+    "notes":    {"emoji_name": "theseus_update_notes",    "icon_file": "message.png"},
+    "roblox":   {"emoji_name": "theseus_update_roblox",   "icon_file": "roblox.png"},
+    "premium":  {},
 }
 
 class TheseusBot(commands.Bot):
@@ -323,7 +323,73 @@ def _format_access_expiry(user: Optional[dict[str, object]]) -> str:
 def _format_key_duration(days: Optional[int]) -> str:
     if days is None:
         return "Permanent"
-    return f"{days} day{'s' if days != 1 else ''}"
+    total_seconds = int(days)
+    if total_seconds <= 0:
+        return "Permanent"
+    units = (
+        ("year", 31536000),
+        ("month", 2592000),
+        ("week", 604800),
+        ("day", 86400),
+        ("hour", 3600),
+        ("minute", 60),
+    )
+    for label, size in units:
+        if total_seconds % size == 0:
+            value = total_seconds // size
+            return f"{value} {label}{'s' if value != 1 else ''}"
+    return f"{total_seconds} seconds"
+
+
+def _parse_duration_input(value: Optional[str]) -> tuple[Optional[int], Optional[str]]:
+    normalized = (value or "").strip().lower()
+    if not normalized:
+        return None, None
+    compact = re.sub(r"\s+", "", normalized)
+    if compact in {"lifetime", "life", "permanent", "forever", "perm"}:
+        return None, None
+
+    match = re.fullmatch(r"(\d+)([a-z]+)", compact)
+    if match is None:
+        return None, "Invalid duration. Use values like `1 minute`, `1w`, `1month`, `1year`, or `lifetime`."
+
+    amount = int(match.group(1))
+    unit = match.group(2)
+    if amount <= 0:
+        return None, "Duration must be greater than zero."
+    if unit == "m":
+        return None, "AMBIGUOUS_MINUTE_MONTH"
+
+    seconds_per_unit = {
+        "min": 60,
+        "mins": 60,
+        "minute": 60,
+        "minutes": 60,
+        "h": 3600,
+        "hr": 3600,
+        "hrs": 3600,
+        "hour": 3600,
+        "hours": 3600,
+        "d": 86400,
+        "day": 86400,
+        "days": 86400,
+        "w": 604800,
+        "week": 604800,
+        "weeks": 604800,
+        "mo": 2592000,
+        "mon": 2592000,
+        "month": 2592000,
+        "months": 2592000,
+        "y": 31536000,
+        "yr": 31536000,
+        "yrs": 31536000,
+        "year": 31536000,
+        "years": 31536000,
+    }
+    multiplier = seconds_per_unit.get(unit)
+    if multiplier is None:
+        return None, "Invalid duration unit. Use minute, week, month, year, or `lifetime`."
+    return amount * multiplier, None
 
 
 def _build_key_export(keys: list[dict[str, object]]) -> str:
@@ -333,15 +399,93 @@ def _build_key_export(keys: list[dict[str, object]]) -> str:
         (
             f"{row['key']} | "
             f"{'used' if row['used'] else 'free'} | "
-            f"duration={_format_key_duration(row.get('duration_days'))}"
+            f"duration={_format_key_duration(row.get('duration_seconds') or (int(row.get('duration_days') or 0) * 86400) or None)}"
         )
         for row in keys
     )
 
 
+async def _send_generated_keys_response(
+    interaction: discord.Interaction,
+    *,
+    count: int,
+    duration_seconds: Optional[int],
+) -> None:
+    keys = await whitelist_store.create_keys(
+        count,
+        interaction.user.id,
+        duration_seconds=duration_seconds,
+    )
+    title = "Keys Generated" if count == 1 else f"Generated {len(keys)} Keys"
+    description = (
+        f"Created **{len(keys)}** ZyphraxHub Community key(s)."
+        if count == 1
+        else "The keys were added to the local whitelist database."
+    )
+    embed = _whitelist_embed(title, description, color=0x2ECC71)
+    embed.add_field(name="Duration", value=_format_key_duration(duration_seconds), inline=True)
+    if count == 1 and len(keys) <= 5:
+        embed.add_field(name="Keys", value="\n".join(f"`{key}`" for key in keys), inline=False)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+    if count != 1 and len(keys) <= 10:
+        embed.add_field(name="Keys", value="\n".join(f"`{key}`" for key in keys), inline=False)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+
+    file = discord.File(
+        fp=io.BytesIO("\n".join(keys).encode("utf-8")),
+        filename=f"zyphrax_keys_{int(time.time())}.txt",
+    )
+    await interaction.response.send_message(embed=embed, file=file, ephemeral=True)
+
+
+class DurationAmbiguityButton(discord.ui.Button):
+    def __init__(self, *, label: str, count: int, duration_seconds: int) -> None:
+        super().__init__(style=discord.ButtonStyle.primary, label=label)
+        self.count = count
+        self.duration_seconds = duration_seconds
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await _send_generated_keys_response(
+            interaction,
+            count=self.count,
+            duration_seconds=self.duration_seconds,
+        )
+
+
+class DurationAmbiguityView(discord.ui.View):
+    def __init__(self, *, count: int) -> None:
+        super().__init__(timeout=300)
+        self.add_item(
+            DurationAmbiguityButton(
+                label="1 Minute",
+                count=count,
+                duration_seconds=60,
+            )
+        )
+        self.add_item(
+            DurationAmbiguityButton(
+                label="1 Month",
+                count=count,
+                duration_seconds=2592000,
+            )
+        )
+
+
 class KeylistDownloadButton(discord.ui.Button):
-    def __init__(self, *, export_text: str, filename: str) -> None:
-        super().__init__(label="Download Keys", style=discord.ButtonStyle.primary)
+    def __init__(
+        self,
+        *,
+        export_text: str,
+        filename: str,
+        emoji: Optional[discord.Emoji] = None,
+    ) -> None:
+        super().__init__(
+            label="Download Keys",
+            style=discord.ButtonStyle.primary,
+            emoji=emoji,
+        )
         self.export_text = export_text
         self.filename = filename
 
@@ -358,9 +502,70 @@ class KeylistDownloadButton(discord.ui.Button):
 
 
 class KeylistDownloadView(discord.ui.View):
-    def __init__(self, *, export_text: str, filename: str) -> None:
+    def __init__(
+        self,
+        *,
+        export_text: str,
+        filename: str,
+        emoji: Optional[discord.Emoji] = None,
+    ) -> None:
         super().__init__(timeout=300)
-        self.add_item(KeylistDownloadButton(export_text=export_text, filename=filename))
+        self.add_item(
+            KeylistDownloadButton(
+                export_text=export_text,
+                filename=filename,
+                emoji=emoji,
+            )
+        )
+
+
+class KeylistPanelView(discord.ui.LayoutView):
+    def __init__(
+        self,
+        *,
+        stats: dict[str, int],
+        keys: list[dict[str, object]],
+        export_text: str,
+        filename: str,
+        panel_emojis: Optional[dict[str, discord.Emoji]] = None,
+    ) -> None:
+        super().__init__(timeout=300)
+        panel_emojis = panel_emojis or {}
+        preview = "No keys found."
+        if keys:
+            preview = "\n".join(
+                (
+                    f"`{row['key']}` "
+                    f"{'used' if row['used'] else 'free'} "
+                    f"({_format_key_duration(row.get('duration_seconds') or (int(row.get('duration_days') or 0) * 86400) or None)})"
+                )
+                for row in keys[:10]
+            )
+
+        description = (
+            "ZyphraxHub Community license overview\n\n"
+            f"**Available**\n`{stats['available_keys']}`\n\n"
+            f"**Used**\n`{stats['used_keys']}`\n\n"
+            f"**Total**\n`{stats['total_keys']}`\n\n"
+            f"**Preview**\n{preview}\n\n"
+            f"**Download**\nUse the button below for the full export."
+        )
+        container = branded_panel_container(
+            title=f"{_panel_emoji_text(panel_emojis, 'settings')}Key Statistics",
+            description=description,
+            accent_color=THESEUS_BLUE,
+        )
+        container.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.large))
+        container.add_item(
+            discord.ui.ActionRow(
+                KeylistDownloadButton(
+                    export_text=export_text,
+                    filename=filename,
+                    emoji=_panel_button_emoji(panel_emojis, "download"),
+                )
+            )
+        )
+        self.add_item(container)
 
 
 def _dashboard_status_text(user: Optional[dict[str, object]], *, is_banned: bool) -> str:
@@ -369,9 +574,9 @@ def _dashboard_status_text(user: Optional[dict[str, object]], *, is_banned: bool
     access_text = "Blacklisted" if is_banned else ("Active" if license_value else "Inactive")
     return (
         f"**Status**\n"
-        f"License: {'✅' if license_value else '❌'} {license_value or 'None'}\n"
-        f"HWID: {'✅' if hwid_value else '⚠️'} {hwid_value or 'Not Set'}\n"
-        f"Access: {'🔴' if is_banned else '🟢' if license_value else '🟡'} {access_text}"
+        f"License: {'Set' if license_value else 'None'} {license_value or ''}\n"
+        f"HWID: {'Set' if hwid_value else 'Not Set'} {hwid_value or ''}\n"
+        f"Access: {access_text}"
     )
 
 
@@ -388,14 +593,14 @@ def _dashboard_summary_text(user: Optional[dict[str, object]], *, is_banned: boo
 
 def _panel_emoji_text(panel_emojis: dict[str, discord.Emoji], key: str) -> str:
     emoji = panel_emojis.get(key)
-    return str(emoji) if emoji is not None else UPDATE_ICON_CONFIGS[key]["fallback"]
+    return f"{emoji} " if emoji is not None else ""
 
 
 def _panel_button_emoji(
     panel_emojis: dict[str, discord.Emoji], key: str
-) -> discord.Emoji | str:
+) -> Optional[discord.Emoji]:
     emoji = panel_emojis.get(key)
-    return emoji if emoji is not None else UPDATE_ICON_CONFIGS[key]["fallback"]
+    return emoji
 
 async def _get_text_channel(
     client: discord.Client, channel_id: int
@@ -1011,14 +1216,14 @@ def _build_paypanel_banner_url() -> Optional[str]:
 
 def _paypanel_emoji_text(panel_emojis: dict[str, discord.Emoji], key: str) -> str:
     emoji = panel_emojis.get(key)
-    return str(emoji) if emoji is not None else PAYPANEL_ICON_CONFIGS[key]["fallback"]
+    return f"{emoji} " if emoji is not None else ""
 
 
 def _paypanel_button_emoji(
     panel_emojis: dict[str, discord.Emoji], key: str
-) -> discord.Emoji | str:
+) -> Optional[discord.Emoji]:
     emoji = panel_emojis.get(key)
-    return emoji if emoji is not None else PAYPANEL_ICON_CONFIGS[key]["fallback"]
+    return emoji
 
 
 def _build_paypanel_description_v2(panel_emojis: dict[str, discord.Emoji]) -> str:
@@ -1150,7 +1355,6 @@ class PayPanelCreateTicketButton(discord.ui.Button):
             style=discord.ButtonStyle.secondary,
             label="Create Ticket",
             custom_id=f"zyphraxhub_paypanel_ticket_{payment_method.lower()}",
-            emoji="🎫",
         )
         self.payment_method = payment_method
 
@@ -1335,7 +1539,6 @@ class DashboardRedeemButton(discord.ui.Button):
             style=discord.ButtonStyle.success,
             label="Redeem Key",
             custom_id="zyphraxhub_dashboard_redeem",
-            emoji="🔑",
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
@@ -1348,7 +1551,6 @@ class DashboardMyInfoButton(discord.ui.Button):
             style=discord.ButtonStyle.secondary,
             label="My Info",
             custom_id="zyphraxhub_dashboard_myinfo",
-            emoji="ℹ️",
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
@@ -1397,7 +1599,6 @@ class DashboardRefreshButton(discord.ui.Button):
             style=discord.ButtonStyle.secondary,
             label="Refresh",
             custom_id="zyphraxhub_dashboard_refresh",
-            emoji="🔄",
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
@@ -2210,35 +2411,32 @@ async def luarmoraudit(interaction: discord.Interaction) -> None:
 @allowed_role_only()
 @app_commands.describe(
     amount="Number of keys to generate (1-25)",
-    days="Optional access duration in days after the key is redeemed",
+    time="Optional access duration like `1 minute`, `1w`, `1month`, `1year`, or `lifetime`",
 )
 async def genkey(
     interaction: discord.Interaction,
     amount: int = 1,
-    days: Optional[app_commands.Range[int, 1, 3650]] = None,
+    time: Optional[str] = None,
 ) -> None:
     if amount < 1 or amount > 25:
         await interaction.response.send_message("Amount must be between 1 and 25.", ephemeral=True)
         return
-
-    await interaction.response.defer(ephemeral=True)
-    keys = await whitelist_store.create_keys(amount, interaction.user.id, duration_days=days)
-    embed = _whitelist_embed(
-        "Keys Generated",
-        f"Created **{len(keys)}** ZyphraxHub Community key(s).",
-        color=0x2ECC71,
-    )
-    embed.add_field(name="Duration", value=_format_key_duration(days), inline=True)
-    if len(keys) <= 5:
-        embed.add_field(name="Keys", value="\n".join(f"`{key}`" for key in keys), inline=False)
-        await interaction.followup.send(embed=embed, ephemeral=True)
+    duration_seconds, error = _parse_duration_input(time)
+    if error == "AMBIGUOUS_MINUTE_MONTH":
+        await interaction.response.send_message(
+            "You entered `1m`. Confirm whether you mean **1 minute** or **1 month**.",
+            view=DurationAmbiguityView(count=amount),
+            ephemeral=True,
+        )
         return
-
-    file = discord.File(
-        fp=io.BytesIO("\n".join(keys).encode("utf-8")),
-        filename=f"zyphrax_keys_{int(time.time())}.txt",
+    if error:
+        await interaction.response.send_message(error, ephemeral=True)
+        return
+    await _send_generated_keys_response(
+        interaction,
+        count=amount,
+        duration_seconds=duration_seconds,
     )
-    await interaction.followup.send(embed=embed, file=file, ephemeral=True)
 
 
 @bot.tree.command(name="masskey", description="Generate many ZyphraxHub Community keys at once")
@@ -2246,32 +2444,30 @@ async def genkey(
 @allowed_role_only()
 @app_commands.describe(
     count="Number of keys to generate (1-50)",
-    days="Optional access duration in days after the key is redeemed",
+    time="Optional access duration like `1 minute`, `1w`, `1month`, `1year`, or `lifetime`",
 )
 async def masskey(
     interaction: discord.Interaction,
     count: int = 5,
-    days: Optional[app_commands.Range[int, 1, 3650]] = None,
+    time: Optional[str] = None,
 ) -> None:
     count = max(1, min(count, 50))
-    await interaction.response.defer(ephemeral=True)
-    keys = await whitelist_store.create_keys(count, interaction.user.id, duration_days=days)
-    embed = _whitelist_embed(
-        f"Generated {len(keys)} Keys",
-        "The keys were added to the local whitelist database.",
-        color=0x2ECC71,
-    )
-    embed.add_field(name="Duration", value=_format_key_duration(days), inline=True)
-    if len(keys) > 10:
-        file = discord.File(
-            fp=io.BytesIO("\n".join(keys).encode("utf-8")),
-            filename=f"zyphrax_keys_{int(time.time())}.txt",
+    duration_seconds, error = _parse_duration_input(time)
+    if error == "AMBIGUOUS_MINUTE_MONTH":
+        await interaction.response.send_message(
+            "You entered `1m`. Confirm whether you mean **1 minute** or **1 month**.",
+            view=DurationAmbiguityView(count=count),
+            ephemeral=True,
         )
-        await interaction.followup.send(embed=embed, file=file, ephemeral=True)
         return
-
-    embed.add_field(name="Keys", value="\n".join(f"`{key}`" for key in keys), inline=False)
-    await interaction.followup.send(embed=embed, ephemeral=True)
+    if error:
+        await interaction.response.send_message(error, ephemeral=True)
+        return
+    await _send_generated_keys_response(
+        interaction,
+        count=count,
+        duration_seconds=duration_seconds,
+    )
 
 
 @bot.tree.command(name="keylist", description="View ZyphraxHub Community key statistics")
@@ -2283,24 +2479,19 @@ async def keylist(interaction: discord.Interaction, show_used: bool = False) -> 
     keys = await whitelist_store.get_all_keys(include_used=show_used)
     export_text = _build_key_export(keys)
     export_name = f"zyphrax_keys_{'all' if show_used else 'unused'}_{int(time.time())}.txt"
-    embed = _whitelist_embed("Key Statistics", "ZyphraxHub Community license overview")
-    embed.add_field(name="Available", value=f"`{stats['available_keys']}`", inline=True)
-    embed.add_field(name="Used", value=f"`{stats['used_keys']}`", inline=True)
-    embed.add_field(name="Total", value=f"`{stats['total_keys']}`", inline=True)
-    if keys:
-        preview = "\n".join(
-            (
-                f"`{row['key']}` "
-                f"{'used' if row['used'] else 'free'} "
-                f"({_format_key_duration(row.get('duration_days'))})"
-            )
-            for row in keys[:10]
-        )
-        embed.add_field(name="Preview", value=preview, inline=False)
-    embed.add_field(name="Download", value="Use the **Download Keys** button below for the full export.", inline=False)
+    panel_emojis: dict[str, discord.Emoji] = {}
+    if interaction.guild is not None:
+        panel_emojis = await _ensure_update_panel_emojis(interaction.guild, interaction.client)
     await interaction.response.send_message(
-        embed=embed,
-        view=KeylistDownloadView(export_text=export_text, filename=export_name),
+        view=ensure_layout_view_action_rows(
+            KeylistPanelView(
+                stats=stats,
+                keys=keys,
+                export_text=export_text,
+                filename=export_name,
+                panel_emojis=panel_emojis,
+            )
+        ),
         ephemeral=True,
     )
 
