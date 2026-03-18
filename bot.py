@@ -473,6 +473,29 @@ class DurationAmbiguityView(discord.ui.View):
         )
 
 
+async def unused_key_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> list[app_commands.Choice[str]]:
+    del interaction
+    normalized_current = current.strip().lower()
+    keys = await whitelist_store.get_all_keys(include_used=False)
+    ranked: list[str] = []
+    for row in keys:
+        key = str(row.get("key") or "").strip()
+        if not key:
+            continue
+        if normalized_current and normalized_current not in key.lower():
+            continue
+        ranked.append(key)
+
+    ranked.sort(key=lambda value: (not value.lower().startswith(normalized_current), value))
+    return [
+        app_commands.Choice(name=key[:100], value=key)
+        for key in ranked[:25]
+    ]
+
+
 class KeylistDownloadButton(discord.ui.Button):
     def __init__(
         self,
@@ -2500,6 +2523,7 @@ async def keylist(interaction: discord.Interaction, show_used: bool = False) -> 
 @app_commands.guild_only()
 @allowed_role_only()
 @app_commands.describe(key="The unused key to delete")
+@app_commands.autocomplete(key=unused_key_autocomplete)
 async def delkey(interaction: discord.Interaction, key: str) -> None:
     normalized_key = key.strip()
     if not normalized_key:
