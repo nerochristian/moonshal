@@ -44,7 +44,7 @@ load_env_file(BASE_DIR / ".env")
 BOT_TOKEN: Optional[str] = os.getenv("DISCORD_BOT_TOKEN")
 DEV_GUILD_ID: Optional[str] = os.getenv("DISCORD_GUILD_ID")
 
-THESEUS_BLUE = 0x3498DB
+THESEUS_PURPLE = 0x8b5cf6
 ALLOWED_ROLE_ID = 1459425844165345423
 ANNOUNCEMENT_CHANNEL_ID = 1479833160136130632
 UPDATE_CHANNEL_ID = 1479834369249247323
@@ -140,7 +140,7 @@ class TheseusBot(commands.Bot):
                 welcome_channel_id=WELCOME_CHANNEL_ID,
                 server_name=SERVER_NAME,
                 server_tag=SERVER_TAG,
-                accent_color=THESEUS_BLUE,
+                accent_color=THESEUS_PURPLE,
                 background_path=WELCOME_BG_PATH,
             )
             if WELCOME_CHANNEL_ID > 0
@@ -161,7 +161,7 @@ class TheseusBot(commands.Bot):
                 welcome_channel_id=WELCOME_CHANNEL_ID,
                 server_name=SERVER_NAME,
                 server_tag=SERVER_TAG,
-                accent_color=THESEUS_BLUE,
+                accent_color=THESEUS_PURPLE,
                 background_path=WELCOME_BG_PATH,
             )
             if WELCOME_CHANNEL_ID > 0
@@ -321,7 +321,7 @@ def _validate_whitelist_key_format(key: str) -> bool:
 
 
 def _whitelist_embed(
-    title: str, description: str = "", color: int = THESEUS_BLUE
+    title: str, description: str = "", color: int = THESEUS_PURPLE
 ) -> discord.Embed:
     embed = discord.Embed(title=title, description=description, color=color)
     embed.set_footer(text="ZyphraxHub Community Team")
@@ -635,7 +635,7 @@ class KeylistPanelView(discord.ui.LayoutView):
         container = branded_panel_container(
             title=f"{_panel_emoji_text(panel_emojis, 'settings')}Key Statistics",
             description=description,
-            accent_color=THESEUS_BLUE,
+            accent_color=THESEUS_PURPLE,
         )
         container.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.large))
         container.add_item(
@@ -1102,7 +1102,7 @@ class SupportedGamesView(discord.ui.LayoutView):
         container = branded_panel_container(
             title=f"{_panel_emoji_text(panel_emojis, 'roblox')} SUPPORTED GAMES",
             description="Browse the Roblox experiences currently supported by ZyphraxHub Community.",
-            accent_color=THESEUS_BLUE,
+            accent_color=THESEUS_PURPLE,
         )
         container.add_item(
             discord.ui.TextDisplay(
@@ -1154,7 +1154,7 @@ class UpdatePanelView(discord.ui.LayoutView):
             description=(
                 f"{_panel_emoji_text(panel_emojis, 'settings')} **Build Version**\n`{version_text}`"
             ),
-            accent_color=THESEUS_BLUE,
+            accent_color=THESEUS_PURPLE,
         )
         container.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
         container.add_item(
@@ -1212,7 +1212,7 @@ def _build_download_embed(
     *, version: str, roblox_version: Optional[str], download_url: str
 ) -> discord.Embed:
     live = _sanitize_panel_text(roblox_version or version)
-    embed = discord.Embed(title="ZyphraxHub Community Windows FAQ", color=THESEUS_BLUE)
+    embed = discord.Embed(title="ZyphraxHub Community Windows FAQ", color=THESEUS_PURPLE)
     embed.add_field(name="Build Version", value=f"`{_sanitize_panel_text(version)}`", inline=False)
     embed.add_field(name="Current Roblox Version", value=f"`{live}`", inline=False)
     embed.add_field(
@@ -1243,7 +1243,7 @@ def _build_download_embed(
 
 
 def _build_dependencies_embed() -> discord.Embed:
-    embed = discord.Embed(title="ZyphraxHub Community Windows Dependencies", color=THESEUS_BLUE)
+    embed = discord.Embed(title="ZyphraxHub Community Windows Dependencies", color=THESEUS_PURPLE)
     embed.add_field(
         name="Required Downloads",
         value=(
@@ -1322,7 +1322,7 @@ class DownloadPanelView(discord.ui.LayoutView):
                 f"**Build Version:** `{version_text}`\n"
                 f"**Current Roblox Version:** `{live_version}`"
             ),
-            accent_color=THESEUS_BLUE,
+            accent_color=THESEUS_PURPLE,
         )
         container.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.large))
         container.add_item(
@@ -1521,7 +1521,7 @@ class PayPanelMethodView(discord.ui.LayoutView):
             title=title,
             description=description,
             banner_url=banner_url,
-            accent_color=THESEUS_BLUE,
+            accent_color=THESEUS_PURPLE,
             banner_separated=True,
         )
         container.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.large))
@@ -1606,7 +1606,7 @@ class PayPanelView(discord.ui.LayoutView):
             title=f"{_paypanel_emoji_text(panel_emojis, 'key')} Purchase Script Key",
             description=_build_paypanel_description_v2(panel_emojis),
             banner_url=_build_paypanel_banner_url(),
-            accent_color=THESEUS_BLUE,
+            accent_color=THESEUS_PURPLE,
             banner_separated=True,
         )
         container.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.large))
@@ -1757,7 +1757,7 @@ class UserDashboardView(discord.ui.LayoutView):
                 f"{_dashboard_status_text(user, is_banned=is_banned)}\n\n"
                 f"{_dashboard_summary_text(user, is_banned=is_banned)}"
             ),
-            accent_color=THESEUS_BLUE,
+            accent_color=THESEUS_PURPLE,
         )
         container.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.large))
         container.add_item(
@@ -2169,7 +2169,7 @@ class GlobalUserPanelView(discord.ui.LayoutView):
             title=title,
             description="Select an option below to manage your account or get the script.",
             logo_url=icon_url,
-            accent_color=THESEUS_BLUE,
+            accent_color=THESEUS_PURPLE,
         )
         container.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.large))
         
@@ -2193,7 +2193,7 @@ def _build_help_embed(interaction: discord.Interaction) -> discord.Embed:
             "Commands are grouped by what you can use right now.\n"
             "Most responses are sent privately, while announcement actions post in their configured channels."
         ),
-        color=THESEUS_BLUE,
+        color=THESEUS_PURPLE,
     )
 
     member = interaction.user if isinstance(interaction.user, discord.Member) else None
@@ -2418,7 +2418,7 @@ async def announce(
         )
         return
 
-    embed = discord.Embed(title=title, description=body, color=THESEUS_BLUE)
+    embed = discord.Embed(title=title, description=body, color=THESEUS_PURPLE)
     embed.set_footer(text=f"{bottom_text}\n\u2014 ZyphraxHub Community Team")
 
     try:
@@ -3007,7 +3007,7 @@ async def lookup(interaction: discord.Interaction, user: str) -> None:
     is_banned = await whitelist_store.is_blacklisted(discord_id)
     embed = _whitelist_embed(
         f"Whitelist Lookup: {discord_id}",
-        color=0xE74C3C if is_banned else THESEUS_BLUE,
+        color=0xE74C3C if is_banned else THESEUS_PURPLE,
     )
     try:
         discord_user = await interaction.client.fetch_user(int(discord_id))
@@ -3067,7 +3067,7 @@ async def luarmorsync(interaction: discord.Interaction, user: str) -> None:
 async def luarmoraudit(interaction: discord.Interaction) -> None:
     await interaction.response.defer(ephemeral=True)
     audit = await whitelist_store.audit_luarmor()
-    embed = _whitelist_embed("Luarmor Audit", color=THESEUS_BLUE)
+    embed = _whitelist_embed("Luarmor Audit", color=THESEUS_PURPLE)
     embed.add_field(name="Local Active Users", value=f"`{audit['local_users']}`", inline=True)
     embed.add_field(name="Remote Users", value=f"`{audit['remote_users']}`", inline=True)
     embed.add_field(name="Missing Remote", value=f"`{len(audit['missing_remote'])}`", inline=True)
