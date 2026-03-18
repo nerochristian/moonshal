@@ -147,11 +147,33 @@ class TheseusBot(commands.Bot):
             else None
         )
 
+class TheseusBot(commands.Bot):
+    def __init__(self) -> None:
+        intents = discord.Intents.default()
+        intents.members = True
+        super().__init__(command_prefix=commands.when_mentioned, intents=intents)
+        self.ticket_system = init_ticket_system(
+            self, base_dir=BASE_DIR, allowed_role_id=ALLOWED_ROLE_ID
+        )
+        self.welcome_system = (
+            init_welcome_system(
+                self,
+                welcome_channel_id=WELCOME_CHANNEL_ID,
+                server_name=SERVER_NAME,
+                server_tag=SERVER_TAG,
+                accent_color=THESEUS_BLUE,
+                background_path=WELCOME_BG_PATH,
+            )
+            if WELCOME_CHANNEL_ID > 0
+            else None
+        )
+
     async def setup_hook(self) -> None:
         self.ticket_system.setup()
         if self.welcome_system is not None:
             self.welcome_system.setup()
         self.add_view(ensure_layout_view_action_rows(PayPanelView()))
+        self.add_view(ensure_layout_view_action_rows(GlobalUserPanelView()))
         self.add_view(
             ensure_layout_view_action_rows(
                 DownloadPanelView(download_url=ROBLOX_LIVE_DOWNLOAD_URL)
@@ -161,7 +183,6 @@ class TheseusBot(commands.Bot):
 
     async def _sync_commands(self) -> None:
         if DEV_GUILD_ID:
-            guild = discord.Object(id=int(DEV_GUILD_ID))
             self.tree.copy_global_to(guild=guild)
             try:
                 synced = await self.tree.sync(guild=guild)
@@ -1996,6 +2017,171 @@ class UserPanelView(discord.ui.LayoutView):
         return cls(user=user, is_banned=is_banned, panel_emojis=panel_emojis)
 
 
+class GlobalUserPanelRedeemButton(discord.ui.Button):
+    def __init__(self, panel_emojis: Optional[dict[str, discord.Emoji]] = None) -> None:
+        pe = panel_emojis or {}
+        custom_emoji: Optional[discord.Emoji] = pe.get("key")
+        super().__init__(
+            style=discord.ButtonStyle.success,
+            label="Redeem Key",
+            custom_id="global_userpanel_redeem",
+            emoji=custom_emoji or "\U0001f511",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await interaction.response.send_modal(RedeemKeyModal())
+
+
+class GlobalUserPanelScriptButton(discord.ui.Button):
+    def __init__(self) -> None:
+        super().__init__(
+            style=discord.ButtonStyle.primary,
+            label="Get Script",
+            custom_id="global_userpanel_script",
+            emoji="\U0001f4dc",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        user = await whitelist_store.get_user(interaction.user.id)
+        if not user or not user.get("key") or _is_access_expired(user):
+            await interaction.response.send_message("You need an active license to get the script.", ephemeral=True)
+            return
+        script_loader = os.getenv("ROBLOX_SCRIPT_LOADER", 'getgenv().API_Key = "YOUR_KEY_HERE"\nloadstring(game:HttpGet("https://api.luarmor.net/v3/projects/YOUR_PROJECT_ID"))()')
+        script_loader = script_loader.replace("YOUR_KEY_HERE", str(user.get("key")))
+        await interaction.response.send_message(f"Here is your script loader:\n```lua\n{script_loader}\n```", ephemeral=True)
+
+
+class GlobalUserPanelRoleButton(discord.ui.Button):
+    def __init__(self) -> None:
+        super().__init__(
+            style=discord.ButtonStyle.primary,
+            label="Get Role",
+            custom_id="global_userpanel_role",
+            emoji="\U0001f464",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        user = await whitelist_store.get_user(interaction.user.id)
+        if not user or not user.get("key") or _is_access_expired(user):
+            await interaction.response.send_message("You need an active license to get the role.", ephemeral=True)
+            return
+        
+        guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message("This action must be performed in a server.", ephemeral=True)
+            return
+            
+        role = guild.get_role(ALLOWED_ROLE_ID)
+        if not role:
+            await interaction.response.send_message("Role not found on this server.", ephemeral=True)
+            return
+
+        target_member = interaction.user
+        if not isinstance(target_member, discord.Member):
+            target_member = guild.get_member(target_member.id)
+            if not target_member:
+                await interaction.response.send_message("You must be in the server to get the role.", ephemeral=True)
+                return
+
+        if role in target_member.roles:
+            await interaction.response.send_message("You already have the role!", ephemeral=True)
+            return
+
+        try:
+            await target_member.add_roles(role, reason="Claimed role via Global UserPanel")
+            await interaction.response.send_message("Role assigned successfully!", ephemeral=True)
+        except discord.Forbidden:
+            await interaction.response.send_message("I don't have permission to assign this role.", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"Failed to assign role: {e}", ephemeral=True)
+
+
+class GlobalUserPanelResetHWIDButton(discord.ui.Button):
+    def __init__(self, panel_emojis: Optional[dict[str, discord.Emoji]] = None) -> None:
+        pe = panel_emojis or {}
+        custom_emoji: Optional[discord.Emoji] = pe.get("hwid")
+        super().__init__(
+            style=discord.ButtonStyle.secondary,
+            label="Reset HWID",
+            custom_id="global_userpanel_resethwid",
+            emoji=custom_emoji or "\U0001f504",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        user = await whitelist_store.get_user(interaction.user.id)
+        if user is None or not user.get("key"):
+            await interaction.response.send_message(
+                "You don't have an active license to reset.", ephemeral=True
+            )
+            return
+        try:
+            success = await whitelist_store.reset_hwid(interaction.user.id, force=False)
+        except LuarmorSyncError as exc:
+            await interaction.response.send_message(
+                f"HWID reset failed: {exc}", ephemeral=True
+            )
+            return
+        if not success:
+            await interaction.response.send_message(
+                "HWID reset failed. You may not have an active key.", ephemeral=True
+            )
+            return
+        embed = _whitelist_embed(
+            "HWID Reset",
+            "Your hardware ID has been reset successfully.\nYou can now authenticate from a new device.",
+            color=0x2ECC71,
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+class GlobalUserPanelStatsButton(discord.ui.Button):
+    def __init__(self, panel_emojis: Optional[dict[str, discord.Emoji]] = None) -> None:
+        pe = panel_emojis or {}
+        custom_emoji: Optional[discord.Emoji] = pe.get("stats")
+        super().__init__(
+            style=discord.ButtonStyle.secondary,
+            label="Get Stats",
+            custom_id="global_userpanel_stats",
+            emoji=custom_emoji or "\U0001f4ca",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        panel_emojis = {}
+        if interaction.guild is not None:
+            panel_emojis = await _ensure_userpanel_emojis(interaction.guild, interaction.client)
+        await interaction.response.send_message(
+            view=ensure_layout_view_action_rows(
+                await UserPanelView.build_for_user(interaction.user.id, panel_emojis=panel_emojis)
+            ),
+            ephemeral=True
+        )
+
+
+class GlobalUserPanelView(discord.ui.LayoutView):
+    def __init__(self, panel_emojis: Optional[dict[str, discord.Emoji]] = None) -> None:
+        super().__init__(timeout=None)
+        
+        btn1 = GlobalUserPanelRedeemButton(panel_emojis)
+        btn1.row = 0
+        self.add_item(btn1)
+        
+        btn2 = GlobalUserPanelScriptButton()
+        btn2.row = 0
+        self.add_item(btn2)
+        
+        btn3 = GlobalUserPanelRoleButton()
+        btn3.row = 0
+        self.add_item(btn3)
+        
+        btn4 = GlobalUserPanelResetHWIDButton(panel_emojis)
+        btn4.row = 0
+        self.add_item(btn4)
+        
+        btn5 = GlobalUserPanelStatsButton(panel_emojis)
+        btn5.row = 1
+        self.add_item(btn5)
+
+
 def _build_help_embed(interaction: discord.Interaction) -> discord.Embed:
     embed = discord.Embed(
         title="ZyphraxHub Community Bot Help",
@@ -2474,6 +2660,31 @@ async def userpanel(interaction: discord.Interaction) -> None:
         ),
         ephemeral=True,
     )
+
+
+@bot.tree.command(name="senduserpanel", description="Post the persistent global UserPanel to the current channel")
+@allowed_role_only()
+@app_commands.guild_only()
+async def senduserpanel(interaction: discord.Interaction) -> None:
+    if not isinstance(interaction.channel, discord.TextChannel):
+        await interaction.response.send_message("This command must be used in a text channel.", ephemeral=True)
+        return
+        
+    await interaction.response.defer(ephemeral=True)
+    panel_emojis = await _ensure_userpanel_emojis(interaction.guild, interaction.client)
+    
+    embed = discord.Embed(
+        color=THESEUS_BLUE,
+        description="Select an option below to manage your account or get the script."
+    )
+    if interaction.guild and interaction.guild.icon:
+        embed.set_author(name=f"{interaction.guild.name} Account Panel", icon_url=interaction.guild.icon.url)
+    else:
+        embed.set_author(name="Account Panel")
+    
+    view = ensure_layout_view_action_rows(GlobalUserPanelView(panel_emojis=panel_emojis))
+    await interaction.channel.send(embed=embed, view=view)
+    await interaction.followup.send("Global UserPanel successfully sent.", ephemeral=True)
 
 
 ALL_ICON_CONFIGS: dict[str, dict[str, str]] = {}
