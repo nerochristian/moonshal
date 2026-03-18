@@ -17,7 +17,7 @@ from discord.ext import commands
 
 from components_v2 import branded_panel_container, ensure_layout_view_action_rows
 from ticket_system import init_ticket_system
-from whitelist_system import KEY_PREFIX, build_store_from_env
+from whitelist_system import KEY_PREFIX, LuarmorSyncError, build_store_from_env
 from welcome_system import init_welcome_system
 
 logging.basicConfig(
@@ -267,13 +267,23 @@ def _format_luarmor_status(user: Optional[dict[str, object]]) -> str:
     if not luarmor_key:
         return "Not linked"
     status = str(user.get("luarmor_status") or "synced").strip().title()
+    ban_reason = str(user.get("luarmor_ban_reason") or "").strip()
+    if ban_reason:
+        return (
+            f"{status}\n"
+            f"Key: `{_mask_key(str(luarmor_key))}`\n"
+            f"Reason: {discord.utils.escape_markdown(ban_reason)}"
+        )
     return f"{status}\nKey: `{_mask_key(str(luarmor_key))}`"
 
 
 
 def _validate_whitelist_key_format(key: str) -> bool:
     pattern = rf"^{KEY_PREFIX}-[A-Z0-9]{{3}}-[A-Z0-9]{{3}}-[A-Z0-9]{{3}}$"
-    return bool(re.match(pattern, key.strip(), flags=re.IGNORECASE))
+    normalized = key.strip()
+    if re.match(pattern, normalized, flags=re.IGNORECASE):
+        return True
+    return bool(re.fullmatch(r"[A-Za-z0-9_-]{16,64}", normalized))
 
 
 def _whitelist_embed(
@@ -289,6 +299,12 @@ def _lookup_discord_id(value: str) -> Optional[str]:
     if normalized.startswith("<@") and normalized.endswith(">"):
         normalized = normalized.strip("<@!>")
     return normalized if normalized.isdigit() else None
+
+
+def _redeem_format_hint() -> str:
+    if whitelist_store.uses_luarmor_keys:
+        return "Invalid key format. Use the Luarmor key exactly as provided."
+    return f"Invalid key format. Expected `{KEY_PREFIX}-XXX-XXX-XXX`."
 
 
 def _mask_key(key: Optional[str]) -> str:
@@ -1429,7 +1445,9 @@ def _build_help_embed(interaction: discord.Interaction) -> discord.Embed:
             "`/paypanel` Post the purchase panel in the current channel.\n"
             "`/whitelist` Auto-whitelist a user and assign a key.\n"
             "`/unwhitelist` Remove a user and release their key.\n"
+            "`/blacklist`, `/unblacklist`, `/resethwid` manage access state.\n"
             "`/lookup` Inspect a whitelist record.\n"
+            "`/luarmorsync`, `/luarmoraudit` inspect Luarmor sync.\n"
             "`/genkey`, `/masskey`, `/keylist`, `/purgekeys` manage keys.\n"
             f"`/update` Upload a build and post the update panel in <#{UPDATE_CHANNEL_ID}>.\n"
             f"`/support add` Add a Roblox game to the supported list.\n"
@@ -1454,7 +1472,7 @@ def _build_help_embed(interaction: discord.Interaction) -> discord.Embed:
             "`/paypanel` looks for `icon pack/qris.*` and uses the largest image in `icon pack` as the banner fallback.\n"
             "`/update` requires notes and a build attachment; changelog entries are optional.\n"
             "`/panel` and `/myinfo` show your current local whitelist status.\n"
-            "`/redeem` expects the `ZyphraxHub-XXX-XXX-XXX` key format.\n"
+            "`/redeem` accepts either the local ZyphraxHub key format or Luarmor-issued keys.\n"
             "`/support add` expects a Roblox game link and resolves the game name automatically.\n"
             "Ticket panel actions and ticket commands must be used inside a server."
         ),
@@ -1782,7 +1800,7 @@ async def redeem(interaction: discord.Interaction, key: str) -> None:
     normalized_key = key.strip()
     if not _validate_whitelist_key_format(normalized_key):
         await interaction.response.send_message(
-            f"Invalid key format. Expected `{KEY_PREFIX}-XXX-XXX-XXX`.",
+            _redeem_format_hint(),
             ephemeral=True,
         )
         return
@@ -1932,6 +1950,71 @@ async def unwhitelist(interaction: discord.Interaction, member: discord.Member) 
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
+@bot.tree.command(name="blacklist", description="Blacklist a user locally and on Luarmor")
+@app_commands.guild_only()
+@allowed_role_only()
+@app_commands.describe(member="The user to blacklist", reason="Why they are being blacklisted")
+async def blacklist(interaction: discord.Interaction, member: discord.Member, reason: str) -> None:
+    await interaction.response.defer(ephemeral=True)
+    await whitelist_store.blacklist_user(member.id, reason=reason, ban_expire=-1)
+    embed = _whitelist_embed(
+        "User Blacklisted",
+        f"{member.mention} was blacklisted.",
+        color=0xE74C3C,
+    )
+    embed.add_field(
+        name="Reason",
+        value=discord.utils.escape_markdown(reason.strip() or "Blacklisted by staff."),
+        inline=False,
+    )
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="unblacklist", description="Remove a user blacklist locally and on Luarmor")
+@app_commands.guild_only()
+@allowed_role_only()
+@app_commands.describe(member="The user to unblacklist")
+async def unblacklist(interaction: discord.Interaction, member: discord.Member) -> None:
+    await interaction.response.defer(ephemeral=True)
+    await whitelist_store.unblacklist_user(member.id)
+    embed = _whitelist_embed(
+        "User Unblacklisted",
+        f"{member.mention} can redeem and run again.",
+        color=0x2ECC71,
+    )
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="resethwid", description="Reset a user's HWID locally and on Luarmor")
+@app_commands.guild_only()
+@allowed_role_only()
+@app_commands.describe(member="The user whose HWID should be reset", force="Force Luarmor cooldown bypass")
+async def resethwid(
+    interaction: discord.Interaction,
+    member: discord.Member,
+    force: bool = False,
+) -> None:
+    await interaction.response.defer(ephemeral=True)
+    if not await whitelist_store.reset_hwid(member.id, force=force):
+        await interaction.followup.send(
+            embed=_whitelist_embed(
+                "No Active Key",
+                f"{member.mention} does not have an active key.",
+                color=0xF1C40F,
+            ),
+            ephemeral=True,
+        )
+        return
+
+    embed = _whitelist_embed(
+        "HWID Reset",
+        f"HWID reset completed for {member.mention}.",
+        color=0x2ECC71,
+    )
+    embed.add_field(name="Forced", value="Yes" if force else "No", inline=True)
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
 @bot.tree.command(name="lookup", description="Look up a whitelist user by mention or ID")
 @app_commands.guild_only()
 @allowed_role_only()
@@ -1973,6 +2056,73 @@ async def lookup(interaction: discord.Interaction, user: str) -> None:
     )
     embed.add_field(name="Status", value="Blacklisted" if is_banned else "Active", inline=False)
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="luarmorsync", description="Resync one whitelist user to Luarmor")
+@app_commands.guild_only()
+@allowed_role_only()
+@app_commands.describe(user="Discord mention or raw ID")
+async def luarmorsync(interaction: discord.Interaction, user: str) -> None:
+    discord_id = _lookup_discord_id(user)
+    if discord_id is None:
+        await interaction.response.send_message("Invalid Discord mention or ID.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    remote_user = await whitelist_store.resync_user_to_luarmor(discord_id)
+    embed = _whitelist_embed(
+        "Luarmor Resynced",
+        f"Resync completed for `{discord_id}`.",
+        color=0x2ECC71,
+    )
+    if remote_user is None:
+        embed.add_field(name="Remote State", value="No remote user remains after resync.", inline=False)
+    else:
+        embed.add_field(name="Remote Key", value=_mask_key(str(remote_user.get("user_key"))), inline=False)
+        embed.add_field(
+            name="Remote Status",
+            value=str(remote_user.get("status") or "unknown").title(),
+            inline=True,
+        )
+        embed.add_field(name="Banned", value="Yes" if remote_user.get("banned") else "No", inline=True)
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="luarmoraudit", description="Audit local whitelist users against Luarmor")
+@app_commands.guild_only()
+@allowed_role_only()
+async def luarmoraudit(interaction: discord.Interaction) -> None:
+    await interaction.response.defer(ephemeral=True)
+    audit = await whitelist_store.audit_luarmor()
+    embed = _whitelist_embed("Luarmor Audit", color=THESEUS_BLUE)
+    embed.add_field(name="Local Active Users", value=f"`{audit['local_users']}`", inline=True)
+    embed.add_field(name="Remote Users", value=f"`{audit['remote_users']}`", inline=True)
+    embed.add_field(name="Missing Remote", value=f"`{len(audit['missing_remote'])}`", inline=True)
+    embed.add_field(name="Remote Only", value=f"`{len(audit['remote_only'])}`", inline=True)
+    embed.add_field(name="Key Mismatches", value=f"`{len(audit['mismatched_keys'])}`", inline=True)
+    embed.add_field(name="Ban Mismatches", value=f"`{len(audit['ban_mismatches'])}`", inline=True)
+
+    preview_lines: list[str] = []
+    if audit["missing_remote"]:
+        preview_lines.append(
+            "Missing remote: " + ", ".join(f"`{value}`" for value in audit["missing_remote"][:5])
+        )
+    if audit["mismatched_keys"]:
+        preview_lines.append(
+            "Key mismatch: " + ", ".join(f"`{value}`" for value in audit["mismatched_keys"][:5])
+        )
+    if audit["ban_mismatches"]:
+        preview_lines.append(
+            "Ban mismatch: " + ", ".join(f"`{value}`" for value in audit["ban_mismatches"][:5])
+        )
+    if audit["remote_only"]:
+        preview_lines.append(
+            "Remote only: " + ", ".join(f"`{value}`" for value in audit["remote_only"][:5])
+        )
+    if preview_lines:
+        embed.add_field(name="Preview", value="\n".join(preview_lines), inline=False)
+
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 @bot.tree.command(name="genkey", description="Generate one or more ZyphraxHub Community keys")
@@ -2187,7 +2337,12 @@ bot.tree.add_command(support_group)
 @myinfo.error
 @whitelist.error
 @unwhitelist.error
+@blacklist.error
+@unblacklist.error
+@resethwid.error
 @lookup.error
+@luarmorsync.error
+@luarmoraudit.error
 @genkey.error
 @masskey.error
 @keylist.error
@@ -2225,6 +2380,10 @@ async def command_error(
 
     if isinstance(original, discord.NotFound):
         LOGGER.warning("Interaction expired before the bot could respond.")
+        return
+
+    if isinstance(original, LuarmorSyncError):
+        await responder(str(original), ephemeral=True)
         return
 
     LOGGER.exception("Unhandled application command error", exc_info=error)

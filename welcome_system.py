@@ -43,6 +43,33 @@ def _format_joined_at(dt: datetime) -> str:
     return f"{dt.day} {dt.strftime('%B %Y %H:%M')}"
 
 
+async def _resolve_live_member_count(bot: discord.Client, guild: discord.Guild) -> int:
+    cached_count = int(guild.member_count or 0)
+
+    try:
+        fetched_guild = await bot.fetch_guild(guild.id, with_counts=True)
+    except (discord.Forbidden, discord.HTTPException, TypeError, AttributeError):
+        fetched_guild = None
+
+    fetched_count = int(getattr(fetched_guild, "approximate_member_count", 0) or 0)
+    if fetched_count > 0:
+        return fetched_count
+
+    if cached_count > 0 and guild.chunked:
+        return cached_count
+
+    try:
+        await guild.chunk(cache=True)
+    except (discord.Forbidden, discord.HTTPException, ValueError):
+        pass
+
+    refreshed_count = int(guild.member_count or 0)
+    if refreshed_count > 0:
+        return refreshed_count
+
+    return cached_count
+
+
 def _build_welcome_card(
     *,
     avatar_bytes: bytes,
@@ -171,6 +198,7 @@ class WelcomeSystem:
 
         joined_at = member.joined_at or discord.utils.utcnow()
         joined_str = _format_joined_at(joined_at)
+        member_count = await _resolve_live_member_count(self._bot, member.guild)
 
         embed = discord.Embed(
             title=f"Welcome System - {self.server_name}",
@@ -189,7 +217,7 @@ class WelcomeSystem:
                     _build_welcome_card,
                     avatar_bytes=avatar_bytes,
                     username=member.display_name,
-                    member_number=member.guild.member_count or 0,
+                    member_number=member_count,
                     server_tag=self.server_tag,
                     background_path=self.background_path,
                 )

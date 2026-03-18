@@ -9,3 +9,8 @@ icon pack/
 venv/
 env/
 ENV/
+update.bat
+update_from_github.bat
+push_to_github.bat
+use.txt
+.auto-update.env
