@@ -341,6 +341,22 @@ def _format_access_expiry(user: Optional[dict[str, object]]) -> str:
     return f"<t:{unix_timestamp}:R>\n<t:{unix_timestamp}:F>"
 
 
+def _is_access_expired(user: Optional[dict[str, object]]) -> bool:
+    """Return True if the user's access_expires_at is in the past."""
+    if user is None:
+        return False
+    expires_at = str(user.get("access_expires_at") or "").strip()
+    if not expires_at:
+        return False
+    try:
+        expiry = datetime.fromisoformat(expires_at)
+    except ValueError:
+        return False
+    if expiry.tzinfo is None:
+        expiry = expiry.replace(tzinfo=UTC)
+    return datetime.now(UTC) >= expiry
+
+
 def _format_key_duration(days: Optional[int]) -> str:
     if days is None:
         return "Permanent"
@@ -615,7 +631,15 @@ class KeylistPanelView(discord.ui.LayoutView):
 def _dashboard_status_text(user: Optional[dict[str, object]], *, is_banned: bool) -> str:
     license_value = user.get("key") if user is not None else None
     hwid_value = user.get("hwid") if user is not None else None
-    access_text = "Blacklisted" if is_banned else ("Active" if license_value else "Inactive")
+    expired = _is_access_expired(user)
+    if is_banned:
+        access_text = "Blacklisted"
+    elif expired:
+        access_text = "Expired"
+    elif license_value:
+        access_text = "Active"
+    else:
+        access_text = "Inactive"
     return (
         f"**Status**\n"
         f"License: {'Set' if license_value else 'None'} {license_value or ''}\n"
@@ -627,6 +651,8 @@ def _dashboard_status_text(user: Optional[dict[str, object]], *, is_banned: bool
 def _dashboard_summary_text(user: Optional[dict[str, object]], *, is_banned: bool) -> str:
     if is_banned:
         return "Your account is blacklisted. Contact staff if you think this is a mistake."
+    if _is_access_expired(user):
+        return "Your license has **expired**. Redeem a new key or open a ticket for help."
     if user is None or not user.get("key"):
         return "Use the `Redeem Key` button below to activate your ZyphraxHub Community license."
     return (
@@ -1771,7 +1797,9 @@ def _build_userpanel_description(
         ]
         return "\n".join(lines)
 
+    expired = _is_access_expired(user)
     tick_e = _userpanel_emoji_str(pe, "tick", "\u2705")
+    x_e    = _userpanel_emoji_str(pe, "x",    "\u26d4")
     key_e  = _userpanel_emoji_str(pe, "key",  "\U0001f511")
     hwid_e = _userpanel_emoji_str(pe, "hwid", "\U0001f4bb")
 
@@ -1788,8 +1816,10 @@ def _build_userpanel_description(
     luarmor_status_raw = str(user.get("luarmor_status") or "synced").strip().title()
     ban_reason = str(user.get("luarmor_ban_reason") or "").strip()
 
+    status_label = "Expired" if expired else "Active"
+    status_emoji = x_e if expired else tick_e
     lines = [
-        _userpanel_status_line("Status", "Active", tick_e),
+        _userpanel_status_line("Status", status_label, status_emoji),
         "",
         _userpanel_status_line("License Key", key_display, key_e),
         _userpanel_status_line("HWID", hwid_display, hwid_e),
@@ -1924,16 +1954,23 @@ class UserPanelView(discord.ui.LayoutView):
         super().__init__(timeout=300)
         pe = panel_emojis or {}
         has_key = bool(user and user.get("key"))
+        expired = _is_access_expired(user)
 
-        title_emoji = _userpanel_emoji_str(pe, "tick", "\U0001f464") if has_key and not is_banned else "\U0001f464"
+        title_emoji = _userpanel_emoji_str(pe, "tick", "\U0001f464") if has_key and not is_banned and not expired else "\U0001f464"
+        if is_banned:
+            accent = 0xE74C3C
+        elif expired:
+            accent = 0xE67E22
+        elif has_key:
+            accent = 0x2ECC71
+        else:
+            accent = 0xF1C40F
         container = branded_panel_container(
             title=f"{title_emoji} Your ZyphraxHub Account",
             description=_build_userpanel_description(
                 user, is_banned=is_banned, panel_emojis=pe
             ),
-            accent_color=(
-                0xE74C3C if is_banned else (0x2ECC71 if has_key else 0xF1C40F)
-            ),
+            accent_color=accent,
         )
         container.add_item(
             discord.ui.Separator(spacing=discord.SeparatorSpacing.large)
@@ -2444,7 +2481,15 @@ async def myinfo(interaction: discord.Interaction) -> None:
     user = await whitelist_store.get_user_with_stats(interaction.user.id)
     is_banned = await whitelist_store.is_blacklisted(interaction.user.id)
     has_active_key = bool(user and user.get("key"))
-    color = 0xE74C3C if is_banned else (0x2ECC71 if has_active_key else 0xF1C40F)
+    expired = _is_access_expired(user)
+    if is_banned:
+        color = 0xE74C3C
+    elif expired:
+        color = 0xE67E22
+    elif has_active_key:
+        color = 0x2ECC71
+    else:
+        color = 0xF1C40F
     embed = _whitelist_embed("Your Whitelist Account", color=color)
     embed.add_field(
         name="User",
@@ -2457,6 +2502,8 @@ async def myinfo(interaction: discord.Interaction) -> None:
         embed.add_field(name="Joined", value=user.get("joined_at") or "Unknown", inline=True)
         embed.add_field(name="Last Login", value=user.get("last_login") or "Never", inline=True)
         embed.add_field(name="Access Expires", value=_format_access_expiry(user), inline=True)
+        if expired:
+            embed.add_field(name="Access Status", value="\u26d4 **Expired** — Redeem a new key.", inline=False)
         embed.add_field(name="Luarmor", value=_format_luarmor_status(user), inline=False)
         embed.add_field(
             name="Stats",
